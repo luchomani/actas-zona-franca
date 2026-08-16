@@ -16,7 +16,7 @@ def extraer_datos_acta(pdf_file):
             [page.extract_text() for page in pdf.pages if page.extract_text()]
         )
 
-    # 1. Usuario
+    # 1. Usuario (Consignado a)
     usuario = re.search(r"consignados?\s+al\s+(.+)", texto, re.IGNORECASE)
 
     # 2 y 4. Documento de Transporte y FMM N°
@@ -69,25 +69,43 @@ def extraer_datos_acta(pdf_file):
         r"DUTA\s+CON\s+NUMERO\s*(\d+)", texto, re.IGNORECASE
     ) or re.search(r"DUTA\s*:\s*(\d+)", texto, re.IGNORECASE)
 
-    # 11. Peso Báscula ZFC
-    peso_bascula = re.search(
-        r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\d{2}/\d{2}/\d{4}[\s\S]*?\b(\d{4,6})\b\s*\n\s*El\s+d[ií]a",
-        texto,
-        re.IGNORECASE,
+    # 11. Peso Báscula ZFC (Captura flexible de peso/kilos)
+    peso_match = (
+        re.search(
+            r"(?:Peso\s*(?:B[áa]scula|Entrada|Bruto)?|B[áa]scula)\s*[:\.\-]?\s*([\d\.,]+)",
+            texto,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\b(\d{3,6})\b",
+            texto,
+            re.IGNORECASE,
+        )
+        or re.search(r"\b(\d{3,6})\s*(?:KGS?|KILOS?)\b", texto, re.IGNORECASE)
     )
+    peso_bascula = peso_match.group(1).strip() if peso_match else "N/A"
 
-    # 12. OBSERVACIONES/ INCONSISTENCIAS
+    # 12. OBSERVACIONES / INCONSISTENCIAS (Extrae todo el bloque dinámico de texto)
     obs_match = re.search(
-        r"Observaciones\s*\n\s*Descripci[oó]n\s*N/A\s*\n([\s\S]*?)(?=DOCUMENTO\s+FORMULARIO)",
+        r"Observaciones[:\s]*\n?([\s\S]*?)(?=\n\s*(?:DOCUMENTO\s+FORMULARIO|FIRMAS|FECHA\s+GENERACI[OÓ]N|\Z))",
         texto,
         re.IGNORECASE,
     )
 
-    observaciones = (
-        obs_match.group(1).replace("\n", " ").strip()
-        if obs_match
-        else "N/A"
-    )
+    if obs_match:
+        obs_texto = obs_match.group(1).strip()
+        # Limpia encabezados internos si existen
+        obs_texto = re.sub(
+            r"^(?:Descripci[oó]n|Inconsistencias)?\s*",
+            "",
+            obs_texto,
+            flags=re.IGNORECASE,
+        )
+        observaciones = (
+            re.sub(r"\s+", " ", obs_texto).strip() if obs_texto else "N/A"
+        )
+    else:
+        observaciones = "N/A"
 
     return {
         "Usuario": usuario.group(1).strip() if usuario else "N/A",
@@ -114,9 +132,7 @@ def extraer_datos_acta(pdf_file):
         "No. Planilla de Recepción (FECHA)": (
             duta.group(1).strip() if duta else "N/A"
         ),
-        "Peso Báscula ZFC": (
-            peso_bascula.group(1).strip() if peso_bascula else "N/A"
-        ),
+        "Peso Báscula ZFC": peso_bascula,
         "OBSERVACIONES/ INCONSISTENCIAS": observaciones,
     }
 
@@ -124,7 +140,11 @@ def extraer_datos_acta(pdf_file):
 # --- INTERFAZ STREAMLIT ---
 st.title("Extractor de Datos de Actas de Tránsito")
 
-uploaded_files = st.file_uploader("Carga los archivos PDF de las actas", type=["pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader(
+    "Carga los archivos PDF de las actas",
+    type=["pdf"],
+    accept_multiple_files=True,
+)
 
 if uploaded_files:
     datos_extraidos = [extraer_datos_acta(file) for file in uploaded_files]
@@ -133,7 +153,6 @@ if uploaded_files:
     st.subheader("2. Resultados")
     st.dataframe(df)
 
-    # Botón para descargar reporte en Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Actas")

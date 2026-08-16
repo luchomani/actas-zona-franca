@@ -1,6 +1,13 @@
+import io
 import re
-import pdfplumber
+import openpyxl
 import pandas as pd
+import pdfplumber
+import streamlit as st
+
+st.set_page_config(
+    page_title="Extractor de Actas - Zona Franca", layout="wide"
+)
 
 
 def extraer_datos_acta(pdf_file):
@@ -9,10 +16,10 @@ def extraer_datos_acta(pdf_file):
             [page.extract_text() for page in pdf.pages if page.extract_text()]
         )
 
-    # 1. Usuario (Consignado a)
+    # 1. Usuario
     usuario = re.search(r"consignados?\s+al\s+(.+)", texto, re.IGNORECASE)
 
-    # 2 y 4. Documento de Transporte y FMM N° (Formulario)
+    # 2 y 4. Documento de Transporte y FMM N°
     doc_form = re.search(
         r"DOCUMENTO\s+FORMULARIO\s+MERCANC[ÍI]A[\s\S]*?\n\s*([A-Z0-9\.\-_]+)\s+(\d+)",
         texto,
@@ -26,7 +33,7 @@ def extraer_datos_acta(pdf_file):
         re.IGNORECASE,
     )
 
-    # 5. Fecha Ingreso Último Vehículo (segunda fecha en la tabla de desprecintaje)
+    # 5. Fecha Ingreso Último Vehículo
     fecha_ingreso = re.search(
         r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\d{2}/\d{2}/\d{4}\s+[\w\d]+\s+[\w\d\.]+\s+(\d{2}/\d{2}/\d{4})",
         texto,
@@ -62,14 +69,14 @@ def extraer_datos_acta(pdf_file):
         r"DUTA\s+CON\s+NUMERO\s*(\d+)", texto, re.IGNORECASE
     ) or re.search(r"DUTA\s*:\s*(\d+)", texto, re.IGNORECASE)
 
-    # 11. Peso Báscula ZFC (Peso de entrada de la tabla de desprecintaje)
+    # 11. Peso Báscula ZFC
     peso_bascula = re.search(
         r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\d{2}/\d{2}/\d{4}[\s\S]*?\b(\d{4,6})\b\s*\n\s*El\s+d[ií]a",
         texto,
         re.IGNORECASE,
     )
 
-    # 12. OBSERVACIONES/ INCONSISTENCIAS (Texto completo de la sección)
+    # 12. OBSERVACIONES/ INCONSISTENCIAS
     obs_match = re.search(
         r"Observaciones\s*\n\s*Descripci[oó]n\s*N/A\s*\n([\s\S]*?)(?=DOCUMENTO\s+FORMULARIO)",
         texto,
@@ -112,3 +119,28 @@ def extraer_datos_acta(pdf_file):
         ),
         "OBSERVACIONES/ INCONSISTENCIAS": observaciones,
     }
+
+
+# --- INTERFAZ STREAMLIT ---
+st.title("Extractor de Datos de Actas de Tránsito")
+
+uploaded_files = st.file_uploader("Carga los archivos PDF de las actas", type=["pdf"], accept_multiple_files=True)
+
+if uploaded_files:
+    datos_extraidos = [extraer_datos_acta(file) for file in uploaded_files]
+    df = pd.DataFrame(datos_extraidos)
+
+    st.subheader("2. Resultados")
+    st.dataframe(df)
+
+    # Botón para descargar reporte en Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Actas")
+
+    st.download_button(
+        label="📥 Descargar Excel",
+        data=output.getvalue(),
+        file_name="reporte_actas_transito.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

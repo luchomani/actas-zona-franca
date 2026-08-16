@@ -57,19 +57,17 @@ def extraer_datos_acta(pdf_file):
     # 8. Acta de Inventario e Inconsistencias PICIZ
     acta_n = re.search(r"Acta\s+N\.\s*(\d+)", texto, re.IGNORECASE)
 
-    # 9. Fecha acta de inventario e inconsistencias
-    fecha_acta = re.search(
+    # 9 y 10. Fecha acta de inventario y Fecha Planilla de Recepción (misma fecha)
+    fecha_acta_match = re.search(
         r"FECHA\s+GENERACI[OÓ]N\s+DEL\s+ACTA:\s*(\d{2}/\d{2}/\d{4})",
         texto,
         re.IGNORECASE,
     )
+    fecha_acta = (
+        fecha_acta_match.group(1).strip() if fecha_acta_match else "N/A"
+    )
 
-    # 10. No. Planilla de Recepción (DUTA)
-    duta = re.search(
-        r"DUTA\s+CON\s+NUMERO\s*(\d+)", texto, re.IGNORECASE
-    ) or re.search(r"DUTA\s*:\s*(\d+)", texto, re.IGNORECASE)
-
-    # 11. Peso Báscula ZFC (Obtiene la segunda cifra de la fila TOTALES)
+    # 11. Peso Báscula ZFC (Segunda cifra de la fila TOTALES)
     peso_match = re.search(
         r"TOTALES\s*:\s*[\d\.,]+\s+([\d\.,]+)", texto, re.IGNORECASE
     ) or re.search(
@@ -79,7 +77,7 @@ def extraer_datos_acta(pdf_file):
     )
     peso_bascula = peso_match.group(1).strip() if peso_match else "N/A"
 
-    # 12. OBSERVACIONES / INCONSISTENCIAS (Texto exacto ubicado debajo de Observaciones)
+    # 12. OBSERVACIONES / INCONSISTENCIAS
     obs_match = re.search(
         r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO\s+FORMULARIO|TOTALES|USUARIO\s+OPERADOR|\Z))",
         texto,
@@ -91,7 +89,6 @@ def extraer_datos_acta(pdf_file):
         lineas_limpias = []
         for line in lineas:
             line_str = line.strip()
-            # Descarta etiquetas o encabezados vacíos iniciales
             if re.match(
                 r"^(Descripción\s*N/A|Bultos|Estado|Términos|Otra)\b",
                 line_str,
@@ -123,12 +120,8 @@ def extraer_datos_acta(pdf_file):
         "Acta de Inventario e Inconsistencias PICIZ": (
             acta_n.group(1).strip() if acta_n else "N/A"
         ),
-        "Fecha acta de inventario e inconsistencias": (
-            fecha_acta.group(1).strip() if fecha_acta else "N/A"
-        ),
-        "No. Planilla de Recepción (FECHA)": (
-            duta.group(1).strip() if duta else "N/A"
-        ),
+        "Fecha acta de inventario e inconsistencias": fecha_acta,
+        "No. Planilla de Recepción (FECHA)": fecha_acta,
         "Peso Báscula ZFC": peso_bascula,
         "OBSERVACIONES/ INCONSISTENCIAS": observaciones,
     }

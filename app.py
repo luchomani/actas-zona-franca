@@ -69,41 +69,38 @@ def extraer_datos_acta(pdf_file):
         r"DUTA\s+CON\s+NUMERO\s*(\d+)", texto, re.IGNORECASE
     ) or re.search(r"DUTA\s*:\s*(\d+)", texto, re.IGNORECASE)
 
-    # 11. Peso Báscula ZFC (Captura flexible de peso/kilos)
-    peso_match = (
-        re.search(
-            r"(?:Peso\s*(?:B[áa]scula|Entrada|Bruto)?|B[áa]scula)\s*[:\.\-]?\s*([\d\.,]+)",
-            texto,
-            re.IGNORECASE,
-        )
-        or re.search(
-            r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\b(\d{3,6})\b",
-            texto,
-            re.IGNORECASE,
-        )
-        or re.search(r"\b(\d{3,6})\s*(?:KGS?|KILOS?)\b", texto, re.IGNORECASE)
+    # 11. Peso Báscula ZFC (Obtiene la segunda cifra de la fila TOTALES)
+    peso_match = re.search(
+        r"TOTALES\s*:\s*[\d\.,]+\s+([\d\.,]+)", texto, re.IGNORECASE
+    ) or re.search(
+        r"DOCUMENTO\s+FORMULARIO[\s\S]*?\n[\s\S]*?\b(\d+(?:\.\d+)?)\s*\n\s*TOTALES",
+        texto,
+        re.IGNORECASE,
     )
     peso_bascula = peso_match.group(1).strip() if peso_match else "N/A"
 
-    # 12. OBSERVACIONES / INCONSISTENCIAS (Extrae todo el bloque dinámico de texto)
+    # 12. OBSERVACIONES / INCONSISTENCIAS (Texto exacto ubicado debajo de Observaciones)
     obs_match = re.search(
-        r"Observaciones[:\s]*\n?([\s\S]*?)(?=\n\s*(?:DOCUMENTO\s+FORMULARIO|FIRMAS|FECHA\s+GENERACI[OÓ]N|\Z))",
+        r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO\s+FORMULARIO|TOTALES|USUARIO\s+OPERADOR|\Z))",
         texto,
         re.IGNORECASE,
     )
 
     if obs_match:
-        obs_texto = obs_match.group(1).strip()
-        # Limpia encabezados internos si existen
-        obs_texto = re.sub(
-            r"^(?:Descripci[oó]n|Inconsistencias)?\s*",
-            "",
-            obs_texto,
-            flags=re.IGNORECASE,
-        )
-        observaciones = (
-            re.sub(r"\s+", " ", obs_texto).strip() if obs_texto else "N/A"
-        )
+        lineas = obs_match.group(1).split("\n")
+        lineas_limpias = []
+        for line in lineas:
+            line_str = line.strip()
+            # Descarta etiquetas o encabezados vacíos iniciales
+            if re.match(
+                r"^(Descripción\s*N/A|Bultos|Estado|Términos|Otra)\b",
+                line_str,
+                re.IGNORECASE,
+            ):
+                continue
+            if line_str:
+                lineas_limpias.append(line_str)
+        observaciones = " ".join(lineas_limpias) if lineas_limpias else "N/A"
     else:
         observaciones = "N/A"
 

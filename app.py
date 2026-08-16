@@ -81,29 +81,21 @@ def extraer_campos_acta(texto: str, nombre_archivo: str) -> dict:
     # 1. Usuario (empresa consignataria)
     usuario = campo(
         "Usuario",
-        r"consignad[oa]s?\s+al\s*[
-]*\s*(.+?)\s*[
-]*\s*y\s+amparad",
+        r"consignad[oa]s?\s+al\s*[\r\n]*\s*(.+?)\s*[\r\n]*\s*y\s+amparad",
         flags=re.IGNORECASE | re.DOTALL
     )
 
     # 2 y 4. Documento de transporte y FMM N° (fila de la tabla de mercancía)
-    # Soporta saltos de línea y diferentes unidades (BULTOS, CAJAS, PIEZAS, etc.) o sin unidad.
     doc_fmm = re.search(
-        r"([A-Z0-9]{4,18})\s*[
-]+\s*(\d{5,15})\s*[
-]+\s*\d+\s*[
-]*(?:BULTOS|CAJAS|PIEZAS|UNIDADES|PALLETS|EMPAQUES)?",
+        r"([A-Z0-9]{4,18})\s*[\r\n]+\s*(\d{5,15})\s*[\r\n]+\s*\d+\s*[\r\n]*(?:BULTOS|CAJAS|PIEZAS|UNIDADES|PALLETS|EMPAQUES)?",
         texto, re.IGNORECASE
     )
     if doc_fmm:
         documento_transporte = doc_fmm.group(1).strip()
         fmm_n = doc_fmm.group(2).strip()
     else:
-        # Fallback 1: Buscar patrón de FMM directo
-        fmm_n = _buscar(r"(9\d{6,8}|\d{7,10})", texto)
-        # Fallback 2: Buscar Doc Transporte formato código alfanumérico largo
-        documento_transporte = _buscar(r"([A-Z]{3,5}\d{5,12}|[A-Z0-9]{8,15})", texto)
+        fmm_n = _buscar(r"\b(9\d{6,8}|\d{7,10})\b", texto)
+        documento_transporte = _buscar(r"\b([A-Z]{3,5}\d{5,12}|[A-Z0-9]{8,15})\b", texto)
         
         if not documento_transporte:
             faltantes.append("Documento de transporte")
@@ -115,8 +107,7 @@ def extraer_campos_acta(texto: str, nombre_archivo: str) -> dict:
     # 3. Tránsito N° / DTA (se toma el número largo tras "Número")
     transito_n = campo(
         "Transito N°",
-        r"[Nn][uú]mero\s*[
-]*\s*(\d{10,20})"
+        r"[Nn][uú]mero\s*[\r\n]*\s*(\d{10,20})"
     )
 
     # 5. Fecha de ingreso del último vehículo (fila de desprecintaje)
@@ -156,19 +147,15 @@ def extraer_campos_acta(texto: str, nombre_archivo: str) -> dict:
     # 8. Número de Acta (PICIZ)
     acta_piciz = campo(
         "Acta de Inventario e Inconsistencias PICIZ",
-        r"Acta N\.?\s*[
-]*\s*(\d+)"
+        r"Acta N\.?\s*[\r\n]*\s*(\d+)"
     )
 
     # 9. Fecha del acta de inventario e inconsistencias (fecha de generación)
     fecha_acta = campo(
         "Fecha acta de inventario e inconsistencias",
-        r"FECHA\s*[
-]*\s*GENERACI[ÓO]N\s+DEL\s+ACTA:?\s*[
-]*\s*(\d{2}/\d{2}/\d{4})"
+        r"FECHA\s*[\r\n]*\s*GENERACI[ÓO]N\s+DEL\s+ACTA:?\s*[\r\n]*\s*(\d{2}/\d{2}/\d{4})"
     )
     if not fecha_acta:
-        # Fallback: fecha impresa en el pie de página del PDF
         fecha_acta = campo(
             "Fecha acta de inventario e inconsistencias",
             r"(\d{1,2}/\d{1,2}/\d{2,4})\s+\d{1,2}:\d{2}\s*[AP]M"
@@ -180,17 +167,14 @@ def extraer_campos_acta(texto: str, nombre_archivo: str) -> dict:
     # 11. Peso báscula ZFC (peso total de la sección TOTALES)
     peso_bascula = campo(
         "Peso Báscula ZFC",
-        r"TOTALES:?[\s
-]*[\d.,]+[\s
-]+([\d.,]+)"
+        r"TOTALES:?[\s\r\n]*[\d.,]+[\s\r\n]+([\d.,]+)"
     )
     if peso_bascula:
         peso_bascula = peso_bascula.split(".")[0].replace(",", "")
 
     # 12. Observaciones / Inconsistencias
     observaciones_raw = _buscar(
-        r"Observaciones\s*
-(.+?)(?=DOCUMENTO\s+FORMULARIO|USUARIO OPERADOR|USUARIO TRANSPORTADOR|\Z)",
+        r"Observaciones\s*\n(.+?)(?=DOCUMENTO\s+FORMULARIO|USUARIO OPERADOR|USUARIO TRANSPORTADOR|\Z)",
         texto,
         flags=re.IGNORECASE | re.DOTALL,
         grupo=1,
@@ -201,8 +185,7 @@ def extraer_campos_acta(texto: str, nombre_archivo: str) -> dict:
     else:
         ruido = re.compile(r"^(descripci[oó]n\s*)?n/a$", re.IGNORECASE)
         lineas_utiles = [
-            ln.strip() for ln in observaciones_raw.split("
-")
+            ln.strip() for ln in observaciones_raw.split("\n")
             if ln.strip() and not ruido.match(ln.strip())
         ]
         observaciones = " ".join(" ".join(lineas_utiles).split())
@@ -228,8 +211,7 @@ def extraer_campos_acta(texto: str, nombre_archivo: str) -> dict:
 def extraer_texto_pdf(data: bytes) -> str:
     """Extrae el texto plano de un PDF usando PyMuPDF."""
     with fitz.open(stream=data, filetype="pdf") as doc:
-        return "
-".join(page.get_text() for page in doc)
+        return "\n".join(page.get_text() for page in doc)
 
 
 def obtener_pdfs_desde_upload(uploaded_file):
@@ -308,7 +290,6 @@ def generar_excel(df: pd.DataFrame) -> bytes:
         n_filas = df.shape[0]
         n_cols = df.shape[1]
 
-        # Encabezados: negrita, fondo azul oscuro, texto blanco
         for col_idx in range(1, n_cols + 1):
             celda = ws.cell(row=1, column=col_idx)
             celda.fill = HEADER_FILL
@@ -316,24 +297,19 @@ def generar_excel(df: pd.DataFrame) -> bytes:
             celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             celda.border = THIN_BORDER
 
-        # Bordes finos en todas las celdas de datos
         for row_idx in range(2, n_filas + 2):
             for col_idx in range(1, n_cols + 1):
                 ws.cell(row=row_idx, column=col_idx).border = THIN_BORDER
                 ws.cell(row=row_idx, column=col_idx).alignment = Alignment(vertical="top", wrap_text=True)
 
-        # Ajuste automático de ancho de columna según longitud del texto
         for col_idx, columna in enumerate(df.columns, start=1):
             longitudes = [len(str(columna))] + [
                 len(str(v)) for v in df[columna].astype(str).tolist()
             ]
-            ancho = min(max(longitudes) + 3, 60)  # tope de 60 para no desbordar
+            ancho = min(max(longitudes) + 3, 60)
             ws.column_dimensions[get_column_letter(col_idx)].width = ancho
 
-        # Auto-filtro sobre el rango de encabezados
         ws.auto_filter.ref = ws.dimensions
-
-        # Inmovilizar la primera fila (encabezados)
         ws.freeze_panes = "A2"
 
     return buffer.getvalue()
@@ -424,7 +400,7 @@ if not df.empty:
             st.text_area("Texto crudo del PDF", st.session_state.textos_crudos[archivo_txt_sel], height=300)
 
     st.subheader("3. Descargar resultados")
-    df_export = df.drop(columns=["Campos_no_encontrados"])  # columna interna de QA, no se exporta
+    df_export = df.drop(columns=["Campos_no_encontrados"])
 
     col1, col2 = st.columns(2)
     with col1:

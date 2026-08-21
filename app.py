@@ -108,7 +108,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
-# Función de Extracción de Datos (pdfplumber)
+# Función de Extracción Robusta y Flexible de Datos (pdfplumber)
 # --------------------------------------------------------------------------
 
 def extraer_datos_acta(pdf_file, nombre_archivo):
@@ -117,46 +117,52 @@ def extraer_datos_acta(pdf_file, nombre_archivo):
             [page.extract_text() for page in pdf.pages if page.extract_text()]
         )
 
-    # 1. Usuario (Consignado a)
-    usuario = re.search(r"consignados?\s+al\s+(.+)", texto, re.IGNORECASE)
+    # 1. Usuario (Consignado a) - Flexible ante saltos de línea o nombres largos multilínea
+    usuario = re.search(r"consignados?\s+al\s*\n?\s*([A-Z0-9\.\-\s]+?)(?=\s+y\s+amparado|\s+DECLARACION|\n\s*DECLARACION|$)", texto, re.IGNORECASE)
+    val_usuario = usuario.group(1).strip() if usuario else "N/A"
+    # Limpiar saltos de línea internos en el nombre del usuario si los hay
+    val_usuario = " ".join(val_usuario.split())
 
-    # 2 y 4. Documento de Transporte y FMM N°
+    # 2 y 4. Documento de Transporte y FMM N° (Búsqueda más flexible en tablas de mercancía)
     doc_form = re.search(
         r"DOCUMENTO\s+FORMULARIO\s+MERCANC[ÍI]A[\s\S]*?\n\s*([A-Z0-9\.\-_]+)\s+(\d+)",
         texto,
         re.IGNORECASE,
     )
+    if not doc_form:
+        # Intento de respaldo genérico si la estructura de tabla varía ligeramente
+        doc_form = re.search(r"\b([A-Z0-9\.\-_]{5,})\s+(\d{7,10})\b", texto)
 
-    # 3. Tránsito N°
+    # 3. Tránsito N° (Declaración de Tránsito Aduanero / Número)
     transito = re.search(
-        r"DECLARACION\s+DE\s+TRANSITO\s+ADUANERO\s*\n?\s*N[úu]mero\s*(\d+)",
+        r"DECLARACION\s+DE\s+TRANSITO\s+ADUANERO\s*\n?\s*(?:Número|N[úu]mero)?\s*[:\.]?\s*(\d+)",
         texto,
         re.IGNORECASE,
     )
 
     # 5. Fecha Ingreso Último Vehículo
     fecha_ingreso = re.search(
-        r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\d{2}/\d{2}/\d{4}\s+[\w\d]+\s+[\w\d\.]+\s+(\d{2}/\d{2}/\d{4})",
+        r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?(\d{2}/\d{2}/\d{4})",
         texto,
         re.IGNORECASE,
     )
 
     # 6. Fecha de autorización
     fecha_auto = re.search(
-        r"Fecha\s+de\s+la\s+autorizaci[oó]n\s+de\s+la\s+operaci[oó]n.*?\b(\d{4}/\d{2}/\d{2})\b",
+        r"Fecha\s+de\s+la\s+autorizaci[oó]n\s+de\s+la\s+operaci[oó]n[^\d]*(\d{4}[-/]\d{2}[-/]\d{2})",
         texto,
         re.IGNORECASE,
     )
 
     # 7. Tránsito Fecha Máxima Finalización
     fecha_limite = re.search(
-        r"Fecha\s+l[ií]mite\s+para\s+finalizar\s+el\s+r[eé]gimen.*?\b(\d{4}/\d{2}/\d{2})\b",
+        r"Fecha\s+l[ií]mite\s+para\s+finalizar\s+el\s+r[eé]gimen[^\d]*(\d{4}[-/]\d{2}[-/]\d{2})",
         texto,
         re.IGNORECASE,
     )
 
-    # 8. Acta de Inventario e Inconsistencias PICIZ
-    acta_n = re.search(r"Acta\s+N\.\s*(\d+)", texto, re.IGNORECASE)
+    # 8. Acta de Inventario e Inconsistencias PICIZ (Acta N.)
+    acta_n = re.search(r"Acta\s+N\.?\s*(\d+)", texto, re.IGNORECASE)
 
     # 9 y 10. Fecha acta de inventario y Fecha Planilla de Recepción (misma fecha)
     fecha_acta_match = re.search(
@@ -168,19 +174,21 @@ def extraer_datos_acta(pdf_file, nombre_archivo):
         fecha_acta_match.group(1).strip() if fecha_acta_match else "N/A"
     )
 
-    # 11. Peso Báscula ZFC
+    # 11. Peso Báscula ZFC (Manejo flexible de totales)
     peso_match = re.search(
         r"TOTALES\s*:\s*[\d\.,]+\s+([\d\.,]+)", texto, re.IGNORECASE
     ) or re.search(
-        r"DOCUMENTO\s+FORMULARIO[\s\S]*?\n[\s\S]*?\b(\d+(?:\.\d+)?)\s*\n\s*TOTALES",
-        texto,
-        re.IGNORECASE,
+        r"TOTALES\s*:\s*([\d\.,]+)", texto, re.IGNORECASE
     )
-    peso_bascula = peso_match.group(1).strip() if peso_match else "N/A"
+
+    if peso_match:
+        peso_bascula = peso_match.group(1).strip()
+    else:
+        peso_bascula = "N/A"
 
     # 12. OBSERVACIONES / INCONSISTENCIAS
     obs_match = re.search(
-        r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO\s+FORMULARIO|TOTALES|USUARIO\s+OPERADOR|\Z))",
+        r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO|TOTALES|USUARIO\s+OPERADOR|FECHA\s+GENERACI|\Z))",
         texto,
         re.IGNORECASE,
     )
@@ -203,7 +211,7 @@ def extraer_datos_acta(pdf_file, nombre_archivo):
         observaciones = "N/A"
 
     return {
-        "Usuario": usuario.group(1).strip() if usuario else "N/A",
+        "Usuario": val_usuario,
         "Documento de transporte": (
             doc_form.group(1).strip() if doc_form else "N/A"
         ),
@@ -297,7 +305,6 @@ with col_titulo:
 
 st.divider()
 
-# Inicialización de estados para limpiar y reiniciar panel
 if "df_resultado_actas" not in st.session_state:
     st.session_state.df_resultado_actas = pd.DataFrame()
 
@@ -322,14 +329,14 @@ with st.container():
 
 if limpiar:
     st.session_state.df_resultado_actas = pd.DataFrame()
-    st.session_state.uploader_key += 1  # Incrementa la llave para vaciar el uploader físicamente
+    st.session_state.uploader_key += 1
     st.rerun()
 
 if procesar:
     if not uploaded_files:
         st.warning("Por favor carga al menos un archivo PDF antes de ejecutar el procesamiento.")
     else:
-        with st.spinner("Extrayendo campos clave de las actas de tránsito...[cite: 7]"):
+        with st.spinner("Extrayendo campos clave de las actas de tránsito..."):
             datos_extraidos = [extraer_datos_acta(file, file.name) for file in uploaded_files]
             st.session_state.df_resultado_actas = pd.DataFrame(datos_extraidos)
         st.success(f"✅ Extracción completada con éxito para {len(uploaded_files)} acta(s).")

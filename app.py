@@ -2,8 +2,8 @@
 """
 Procesador Masivo de Declaraciones de Importación (DIM - Formulario 500 DIAN)
 ================================================================================
-App Streamlit con parser numérico avanzado, detección de Actas de Inspección,
-Manifiestos, Documentos de Transporte y validación estricta anti-duplicados.
+App Streamlit con parser numérico avanzado, detección de Manifiestos, 
+Documentos de Transporte y validación estricta anti-duplicados.
 """
 
 import io
@@ -121,9 +121,14 @@ def extraer_campos_dim(chunk_texto: str, texto_completo: str, nombre_archivo: st
     razon_social = campo("Razón Social Importador", r"11\s*\.\s*Apellidos y nombres o Raz[oó]n Social\s*([^\n]+)")
     factura = campo("Factura", r"51\s*\.\s*No\.\s*de\s*factura\s*\n\s*(\S+)")
     
-    # Nuevas casillas: Manifiesto de carga (42) y Documento de transporte (44)
-    manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.\s*Manifiesto\s+de\s+carga\s*[\r\n]*\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-    documento_transporte = campo("Documento de transporte", r"44\s*\.\s*Documento\s+de\s+transporte\s*[\r\n]*\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
+    # Extracción robusta para Casilla 42 y 44
+    manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.\s*Manifiesto\s+de\s+carga\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
+    if not manifiesto_carga:
+        manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.\s*Manifiesto\s+de\s+carga[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
+
+    documento_transporte = campo("Documento de transporte", r"44\s*\.\s*Documento\s+de\s+transporte\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
+    if not documento_transporte:
+        documento_transporte = campo("Documento de transporte", r"44\s*\.\s*Documento\s+de\s+transporte[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
 
     cod_pais_procedencia = campo("Cod. País Procedencia", r"53\s*\.\s*(?:C[oó]d\.?\s*)?pa[ií]s\s+(?:de\s+)?procedencia\s*([A-Za-z0-9]{2,3})")
     cod_modo_transporte = campo("Cod. Modo Transporte", r"54\s*\.\s*Cod\.\s*Modo\s*Transporte\s*(\d)")
@@ -254,9 +259,6 @@ def procesar_archivos(uploaded_files, progress_callback=None) -> pd.DataFrame:
 
     df = pd.DataFrame(filas, columns=COLUMNAS)
 
-    # ======================================================================
-    # VALIDACIÓN Y LIMPIEZA FLEXIBLE ANTI-DUPLICADOS
-    # ======================================================================
     if "Número de formulario" in df.columns:
         df["Número de formulario"] = df["Número de formulario"].astype(str).str.strip()
         df = df[

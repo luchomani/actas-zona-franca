@@ -1,459 +1,137 @@
 # -*- coding: utf-8 -*-
 """
-Procesador Masivo de Declaraciones de Importación (DIM - Formulario 500 DIAN)
-================================================================================
-App Streamlit con parser numérico avanzado, detección de Manifiestos, 
-Documentos de Transporte y validación estricta anti-duplicados.
+Procesador Masivo de Actas de Inventario e Inconsistencias (PICIZ)
+==================================================================
+Aplicación Streamlit para cargar múltiples PDFs de actas PICIZ, 
+extraer sus campos clave mediante expresiones regulares y generar 
+un reporte consolidado en Excel.
 """
 
 import io
 import re
-import zipfile
-from datetime import datetime
-
-import fitz  # PyMuPDF
 import pandas as pd
+import pdfplumber
 import streamlit as st
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 
-# --------------------------------------------------------------------------
-# Configuración general
-# --------------------------------------------------------------------------
-
+# Configuración inicial de la página
 st.set_page_config(
-    page_title="Procesador de DIM",
-    page_icon="🧾",
+    page_title="Extractor Actas PICIZ",
+    page_icon="📋",
     layout="wide",
 )
 
-# LISTA OFICIAL DE COLUMNAS (Sin NIT Declarante, con Manifiesto y Doc. Transporte)
-COLUMNAS = [
-    "Número de formulario",
-    "NIT Importador",
-    "Razón Social Importador",
-    "Factura",
-    "Manifiesto de carga",
-    "Documento de transporte",
-    "Cod. País Procedencia",
-    "Cod. Modo Transporte",
-    "Código de Bandera",
-    "Tasa de Cambio",
-    "Subpartida Arancelaria",
-    "Cod. País Origen",
-    "Cod. País Compra",
-    "Peso Bruto (Kgs)",
-    "Peso Neto (Kgs)",
-    "Código de Embalaje",
-    "No. Bultos",
-    "Valor FOB (USD)",
-    "Sumatoria Fletes/Seguros/Otros (USD)",
-    "Acta de Inspección No.",
-    "Levante No.",
-    "Fecha del Levante",
+COLUMNAS_ACTAS = [
+    "Número de Acta",
+    "Datos del Usuario",
+    "Documento de Transporte",
+    "Fecha de Autorización",
+    "Peso de Báscula",
     "Archivo",
-    "Campos_no_encontrados",
 ]
 
-MONTO = r"[\d\.,]+"
-ENTERO_MILES = r"[\d\.,]+"
-
-# --------------------------------------------------------------------------
-# Parser Numérico Avanzado
-# --------------------------------------------------------------------------
-
-def limpiar_monto(val_str):
-    if not val_str:
-        return 0.0
-    val_str = str(val_str).strip()
-    val_str = re.sub(r'[^\d.,]', '', val_str)
-    if not val_str:
-        return 0.0
-
-    if ',' in val_str:
-        val_str = val_str.replace('.', '').replace(',', '.')
-    else:
-        partes = val_str.split('.')
-        if len(partes) == 2:
-            if len(partes[1]) == 3 and len(partes[0]) <= 3:
-                val_str = val_str.replace('.', '')
-        elif len(partes) > 2:
-            if len(partes[-1]) == 2:
-                val_str = "".join(partes[:-1]) + "." + partes[-1]
-            else:
-                val_str = val_str.replace('.', '')
-
-    try:
-        return float(val_str)
-    except ValueError:
-        return 0.0
-
-# --------------------------------------------------------------------------
-# Utilidades de extracción
-# --------------------------------------------------------------------------
-
-def _buscar(patron, texto, flags=re.IGNORECASE, grupo=1):
-    m = re.search(patron, texto, flags)
-    if m:
-        try:
-            return m.group(grupo).strip()
-        except IndexError:
-            return None
-    return None
-
-def dividir_dims(texto: str):
-    partes = re.split(r"(?=Declaraci[oó]n de Importaci[oó]n)", texto, flags=re.IGNORECASE)
-    return [p for p in partes if re.search(r"N[uú]mero de formulario", p, re.IGNORECASE)]
-
-def extraer_campos_dim(chunk_texto: str, texto_completo: str, nombre_archivo: str) -> dict:
-    faltantes = []
-
-    def campo(nombre, patron, grupo=1, default=""):
-        valor = _buscar(patron, chunk_texto, grupo=grupo)
-        if not valor:
-            valor = _buscar(patron, texto_completo, grupo=grupo)
-        if not valor:
-            faltantes.append(nombre)
-            return default
-        return " ".join(valor.split())
-
-    numero_formulario = campo("Número de formulario", r"4\s*\.\s*N[uú]mero de formulario\s*\n?\s*(\S+)")
-    nit_importador = campo("NIT Importador", r"5\s*\.\s*N[uú]mero de Identificaci[oó]n Tributaria \(NIT\)\s*(\d{9,10})")
-    razon_social = campo("Razón Social Importador", r"11\s*\.\s*Apellidos y nombres o Raz[oó]n Social\s*([^\n]+)")
-    factura = campo("Factura", r"51\s*\.\s*No\.\s*de\s*factura\s*\n\s*(\S+)")
-    
-    # Casilla 42: Manifiesto de carga (Corregido para PDFs sin punto en el número 42)
-    manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.?\s*Manifiesto\s+de\s+carga\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-    if not manifiesto_carga:
-        manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.?\s*Manifiesto\s+de\s+carga[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-
-    # Casilla 44: Documento de transporte (Corregido para PDFs sin punto en el número 44)
-    documento_transporte = campo("Documento de transporte", r"44\s*\.?\s*Documento\s+de\s+transporte\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-    if not documento_transporte:
-        documento_transporte = campo("Documento de transporte", r"44\s*\.?\s*Documento\s+de\s+transporte[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-
-    cod_pais_procedencia = campo("Cod. País Procedencia", r"53\s*\.\s*(?:C[oó]d\.?\s*)?pa[ií]s\s+(?:de\s+)?procedencia\s*([A-Za-z0-9]{2,3})")
-    cod_modo_transporte = campo("Cod. Modo Transporte", r"54\s*\.\s*Cod\.\s*Modo\s*Transporte\s*(\d)")
-    codigo_bandera = campo("Código de Bandera", r"55\s*\.\s*C[oó]digo\s+(?:de\s+)?bandera\s*([A-Za-z0-9]{2,3})")
-    tasa_cambio = campo("Tasa de Cambio", r"Tasa de cambio\s*\$?\s*cvs\.?\s*\n?\s*([\d.,]+)")
-    subpartida = campo("Subpartida Arancelaria", r"59\s*\.\s*Subpartida arancelaria\s*(\d{10})")
-    cod_pais_origen = campo("Cod. País Origen", r"66\s*\.\s*(?:C[oó]d\.?\s*)?pa[ií]s\s+(?:de\s+)?origen\s*([A-Za-z0-9]{2,3})")
-    cod_pais_compra = campo("Cod. País Compra", r"70\s*\.\s*Cod\s*\.\s*pa[ií]s\s*\n?\s*compra\s*(\d{2,3})")
-    codigo_embalaje = campo("Código de Embalaje", r"73\s*\.\s*C[oó]digo\s*\n?\s*embalaje\s*([A-Za-z0-9]{1,4})")
-    
-    peso_bruto = limpiar_monto(campo("Peso Bruto (Kgs)", r"71\s*\.\s*Peso bruto kgs\.\s*dcms\.\s*(" + MONTO + ")"))
-    peso_neto = limpiar_monto(campo("Peso Neto (Kgs)", r"72\s*\.\s*Peso neto kgs\.\s*dcms\.\s*(" + MONTO + ")"))
-    valor_fob = limpiar_monto(campo("Valor FOB (USD)", r"78\s*\.\s*Valor FOB USD\s*(" + MONTO + ")"))
-    sumatoria_fletes = limpiar_monto(campo("Sumatoria Fletes/Seguros/Otros (USD)", r"82\s*\.\s*Sumatoria de fletes,?\s*seguros\s*\n?\s*y otros gastos USD\s*(" + MONTO + ")"))
-    
-    n_bultos_str = campo("No. Bultos", r"74\s*\.\s*No\.\s*bultos\s*(" + ENTERO_MILES + ")")
-    try:
-        no_bultos = int(re.sub(r'[^\d]', '', n_bultos_str)) if n_bultos_str else 0
-    except ValueError:
-        no_bultos = 0
-
-    acta_inspeccion = ""
-    m_acta = re.search(r"ACTA\s+DE\s+INSPECCI[OÓ]N\s*(?:No\.?|Número)?\s*[:\.]?\s*([0-9]{8,15})", texto_completo, re.IGNORECASE)
-    if m_acta:
-        acta_inspeccion = m_acta.group(1).strip()
-
-    levante_no = ""
-    m_lev_box = re.search(r"134\.?\s*Levante\s+No\.?\s*([0-9A-Za-z\-]+)", chunk_texto, re.IGNORECASE)
-    if m_lev_box:
-        levante_no = m_lev_box.group(1).strip()
-    
-    if not levante_no:
-        m_lev_gen = re.search(r"(?:Levante|Auto(?:rización)?)\s*(?:No\.?|Número)?\s*[:\.]?\s*([0-9A-Za-z\-]+)", texto_completo, re.IGNORECASE)
-        if m_lev_gen:
-            levante_no = m_lev_gen.group(1).strip()
-
-    if levante_no:
-        levante_no = re.sub(r"^(?:No\.?|Nro\.?)\s*", "", levante_no, flags=re.IGNORECASE).strip()
-    else:
-        faltantes.append("Levante No.")
-
-    fecha_levante = campo("Fecha del Levante", r"135\.?\s*Fecha[^\d\n]*(\d{4}\s*[-/\.]\s*\d{2}\s*[-/\.]\s*\d{2})")
-    if not fecha_levante:
-        m_fec = re.search(r"\b(20\d{2}[-/\.](?:0[1-9]|1[0-2])[-/\.](?:0[1-9]|[12]\d|3[01]))\b", texto_completo)
-        if m_fec:
-            fecha_levante = m_fec.group(1)
-            if "Fecha del Levante" in faltantes:
-                faltantes.remove("Fecha del Levante")
-
-    if fecha_levante:
-        fecha_levante = re.sub(r"\s+", "", fecha_levante)
-        fecha_levante = re.sub(r"[/.]", "-", fecha_levante)
-
-    return {
-        "Número de formulario": numero_formulario,
-        "NIT Importador": nit_importador,
-        "Razón Social Importador": razon_social,
-        "Factura": factura,
-        "Manifiesto de carga": manifiesto_carga,
-        "Documento de transporte": documento_transporte,
-        "Cod. País Procedencia": cod_pais_procedencia,
-        "Cod. Modo Transporte": cod_modo_transporte,
-        "Código de Bandera": codigo_bandera,
-        "Tasa de Cambio": tasa_cambio,
-        "Subpartida Arancelaria": subpartida,
-        "Cod. País Origen": cod_pais_origen,
-        "Cod. País Compra": cod_pais_compra,
-        "Peso Bruto (Kgs)": peso_bruto,
-        "Peso Neto (Kgs)": peso_neto,
-        "Código de Embalaje": codigo_embalaje,
-        "No. Bultos": no_bultos,
-        "Valor FOB (USD)": valor_fob,
-        "Sumatoria Fletes/Seguros/Otros (USD)": sumatoria_fletes,
-        "Acta de Inspección No.": acta_inspeccion,
-        "Levante No.": levante_no,
-        "Fecha del Levante": fecha_levante,
-        "Archivo": nombre_archivo,
-        "Campos_no_encontrados": ", ".join(faltantes) if faltantes else "",
-    }
-
-def extraer_texto_pdf(data: bytes) -> str:
-    with fitz.open(stream=data, filetype="pdf") as doc:
-        return "\n".join(page.get_text() for page in doc)
-
-def obtener_pdfs_desde_upload(uploaded_file):
-    nombre = uploaded_file.name
-    contenido = uploaded_file.read()
-
-    if nombre.lower().endswith(".zip"):
-        pdfs = []
-        with zipfile.ZipFile(io.BytesIO(contenido)) as zf:
-            for info in zf.infolist():
-                if info.filename.lower().endswith(".pdf") and not info.is_dir():
-                    pdfs.append((info.filename.split("/")[-1], zf.read(info.filename)))
-        return pdfs
-    elif nombre.lower().endswith(".pdf"):
-        return [(nombre, contenido)]
-    else:
-        return []
-
-def procesar_archivos(uploaded_files, progress_callback=None) -> pd.DataFrame:
-    filas = []
-    tareas = []
-
-    for uf in uploaded_files:
-        tareas.extend(obtener_pdfs_desde_upload(uf))
-
-    total = max(len(tareas), 1)
-    for i, (nombre_pdf, data) in enumerate(tareas, start=1):
-        try:
-            texto_completo = extraer_texto_pdf(data)
-            dim_chunks = dividir_dims(texto_completo)
-            if not dim_chunks:
-                dim_chunks = [texto_completo]
-            for chunk in dim_chunks:
-                fila = extraer_campos_dim(chunk, texto_completo, nombre_pdf)
-                filas.append(fila)
-        except Exception as exc: 
-            fila = {c: "" for c in COLUMNAS}
-            fila["Archivo"] = nombre_pdf
-            fila["Campos_no_encontrados"] = f"ERROR AL PROCESAR: {exc}"
-            filas.append(fila)
-        if progress_callback:
-            progress_callback(i / total, nombre_pdf)
-
-    if not filas:
-        return pd.DataFrame(columns=COLUMNAS)
-
-    df = pd.DataFrame(filas, columns=COLUMNAS)
-
-    if "Número de formulario" in df.columns:
-        df["Número de formulario"] = df["Número de formulario"].astype(str).str.strip()
-        df = df[
-            df["Número de formulario"].notna() & 
-            (df["Número de formulario"] != "") & 
-            (df["Número de formulario"].str.lower() != "nan")
-        ]
-        df = df.drop_duplicates(subset=["Número de formulario"], keep="last").reset_index(drop=True)
-
-    if "Levante No." in df.columns:
-        df["Levante No."] = df["Levante No."].astype(str).str.strip()
-
-    return df
-
-# --------------------------------------------------------------------------
-# Exportación a Excel y CSV
-# --------------------------------------------------------------------------
-
-HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-HEADER_FONT = Font(color="FFFFFF", bold=True)
-TOTAL_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-THIN_BORDER = Border(
-    left=Side(style="thin", color="D9D9D9"),
-    right=Side(style="thin", color="D9D9D9"),
-    top=Side(style="thin", color="D9D9D9"),
-    bottom=Side(style="thin", color="D9D9D9"),
-)
-
-def generar_excel(df: pd.DataFrame) -> bytes:
-    buffer = io.BytesIO()
-    df_export = df.copy()
-
-    if not df_export.empty:
-        total_row = {c: "" for c in df_export.columns}
-        total_row["Número de formulario"] = "TOTALES CONSOLIDADOS"
-        total_row["Valor FOB (USD)"] = df_export["Valor FOB (USD)"].sum()
-        total_row["Sumatoria Fletes/Seguros/Otros (USD)"] = df_export["Sumatoria Fletes/Seguros/Otros (USD)"].sum()
-        total_row["Peso Bruto (Kgs)"] = df_export["Peso Bruto (Kgs)"].sum()
-        total_row["Peso Neto (Kgs)"] = df_export["Peso Neto (Kgs)"].sum()
-        total_row["No. Bultos"] = df_export["No. Bultos"].sum()
+def extraer_datos_piciz(pdf_bytes):
+    """
+    Extrae los campos clave de un PDF de Actas de PICIZ (Inventarios e Inconsistencias).
+    """
+    datos = {}
+    with pdfplumber.open(pdf_bytes) as pdf:
+        texto_completo = []
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                texto_completo.append(t)
         
-        df_export = pd.concat([df_export, pd.DataFrame([total_row])], ignore_index=True)
+        texto = "\n".join(texto_completo)
+        
+        # 1. Número de Acta
+        m = re.search(r'(?:Número\s+de\s+Acta|Acta\s+No\.?|Acta\s+Número)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
+        datos["Número de Acta"] = m.group(1).strip() if m else ""
 
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_export.to_excel(writer, index=False, sheet_name="DIM")
-        ws = writer.sheets["DIM"]
+        # 2. Datos del Usuario / Importador
+        m = re.search(r'(?:Usuario|Importador|Declarante|Razón\s+Social)\s*[:\-]?\s*([^\n]+)', texto, re.IGNORECASE)
+        datos["Datos del Usuario"] = m.group(1).strip() if m else ""
 
-        n_filas = df_export.shape[0]
-        n_cols = df_export.shape[1]
+        # 3. Documento de Transporte
+        m = re.search(r'(?:Documento\s+de\s+Transporte|Doc\.?\s+Transporte|Manifiesto)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
+        datos["Documento de Transporte"] = m.group(1).strip() if m else ""
 
-        for col_idx in range(1, n_cols + 1):
-            celda = ws.cell(row=1, column=col_idx)
-            celda.fill = HEADER_FILL
-            celda.font = HEADER_FONT
-            celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            celda.border = THIN_BORDER
+        # 4. Fecha de Autorización
+        m = re.search(r'(?:Fecha\s+de\s+Autorización|Fecha\s+Autorización)\s*[:\-]?\s*([0-9]{4}[\-/][0-9]{2}[\-/][0-9]{2})', texto, re.IGNORECASE)
+        datos["Fecha de Autorización"] = m.group(1).strip() if m else ""
 
-        for row_idx in range(2, n_filas + 2):
-            for col_idx in range(1, n_cols + 1):
-                celda = ws.cell(row=row_idx, column=col_idx)
-                celda.border = THIN_BORDER
-                celda.alignment = Alignment(vertical="top", wrap_text=True)
-                
-                if isinstance(celda.value, (int, float)):
-                    celda.number_format = '#,##0.00'
-                    
-                if row_idx == n_filas + 1:
-                    celda.fill = TOTAL_FILL
-                    celda.font = Font(bold=True)
+        # 5. Peso de Báscula
+        m = re.search(r'(?:Peso\s+de\s+Báscula|Peso\s+Báscula|Peso\s+Bruto)\s*[:\-]?\s*([\d\.\,]+)', texto, re.IGNORECASE)
+        datos["Peso de Báscula"] = m.group(1).strip() if m else ""
 
-        for col_idx, columna in enumerate(df_export.columns, start=1):
-            longitudes = [len(str(columna))] + [len(str(v)) for v in df_export[columna].astype(str).tolist()]
-            ancho = min(max(longitudes) + 3, 45)
-            ws.column_dimensions[get_column_letter(col_idx)].width = ancho
+    return datos
 
-        ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{n_filas}"
-        ws.freeze_panes = "A2"
+def main():
+    st.title("📋 Procesador Masivo de Actas de PICIZ")
+    st.markdown(
+        """
+        Esta herramienta procesa actas de inventario e inconsistencias de **PICIZ** en formato PDF, 
+        extrayendo la trazabilidad aduanera de mercancías[cite: 1] para consolidarlas automáticamente en un archivo Excel.
+        """
+    )
 
-    return buffer.getvalue()
-
-def generar_csv(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
-
-# --------------------------------------------------------------------------
-# Interfaz Streamlit
-# --------------------------------------------------------------------------
-
-st.title("🧾 Procesador Masivo de Declaraciones de Importación (DIM)")
-st.caption("Formulario 500 DIAN · Manifiestos, Documentos de Transporte y Control Anti-Duplicados")
-
-if "df_resultado_dim" not in st.session_state:
-    st.session_state.df_resultado_dim = pd.DataFrame(columns=COLUMNAS)
-
-with st.container(border=True):
-    st.subheader("1. Cargar documentos")
+    st.subheader("1. Cargar documentos PDF")
     uploaded_files = st.file_uploader(
-        "Arrastra aquí archivos PDF individuales o un ZIP con varios PDFs",
-        type=["pdf", "zip"],
-        accept_multiple_files=True,
-        key="dim_uploader",
+        "Seleccione uno o varios archivos PDF de actas", 
+        type=["pdf"], 
+        accept_multiple_files=True
     )
 
-    procesar = st.button("🚀 Procesar Documentos", type="primary", use_container_width=True)
-
-if procesar:
     if not uploaded_files:
-        st.warning("Por favor carga al menos un archivo PDF o ZIP antes de procesar.")
-    else:
-        progreso = st.progress(0.0, text="Iniciando procesamiento...")
+        st.info("👆 Por favor, cargue archivos PDF para comenzar el procesamiento.")
+        st.stop()
 
-        def _cb(pct, nombre):
-            progreso.progress(pct, text=f"Procesando: {nombre}")
+    st.success(f"✅ Se han cargado **{len(uploaded_files)}** archivo(s).")
 
-        with st.spinner("Extrayendo información de las declaraciones..."):
-            df = procesar_archivos(uploaded_files, progress_callback=_cb)
+    if st.button("🚀 Extraer Datos y Consolidar", type="primary", use_container_width=True):
+        registros = []
+        barra_progreso = st.progress(0)
+        estado_texto = st.empty()
 
-        progreso.empty()
-        st.session_state.df_resultado_dim = df
-        st.success(f"✅ Procesamiento completado. {len(df)} declaración(es) única(s) extraída(s).")
+        for idx, file in enumerate(uploaded_files):
+            estado_texto.text(f"Procesando ({idx + 1}/{len(uploaded_files)}): {file.name}")
+            try:
+                res = extraer_datos_piciz(file)
+                res["Archivo"] = file.name
+                registros.append(res)
+            except Exception as e:
+                st.error(f"Error procesando el archivo {file.name}: {e}")
+            
+            barra_progreso.progress((idx + 1) / len(uploaded_files))
 
-# --------------------------------------------------------------------------
-# Resultados y Totales
-# --------------------------------------------------------------------------
+        estado_texto.empty()
+        barra_progreso.empty()
 
-df = st.session_state.df_resultado_dim
+        df = pd.DataFrame(registros)
+        
+        # Ordenar columnas
+        cols = [c for c in COLUMNAS_ACTAS if c in df.columns] + [c for c in df.columns if c not in COLUMNAS_ACTAS]
+        df = df[cols]
 
-if not df.empty:
-    st.subheader("2. Resultados y Consolidado")
+        st.session_state["df_actas"] = df
 
-    st.markdown("##### 📊 Totales de la extracción actual")
-    cols_totales = st.columns(4)
-    
-    total_fob = df["Valor FOB (USD)"].sum()
-    total_fletes = df["Sumatoria Fletes/Seguros/Otros (USD)"].sum()
-    total_peso_bruto = df["Peso Bruto (Kgs)"].sum()
-    total_peso_neto = df["Peso Neto (Kgs)"].sum()
+    if "df_actas" in st.session_state:
+        df = st.session_state["df_actas"]
 
-    cols_totales[0].metric("Total Valor FOB (USD)", f"${total_fob:,.2f}")
-    cols_totales[1].metric("Total Fletes/Seguros (USD)", f"${total_fletes:,.2f}")
-    cols_totales[2].metric("Total Peso Bruto (Kgs)", f"{total_peso_bruto:,.2f}")
-    cols_totales[3].metric("Total Peso Neto (Kgs)", f"{total_peso_neto:,.2f}")
-    st.divider()
+        st.subheader("2. Resultados Extraídos")
+        st.dataframe(df, use_container_width=True)
 
-    busqueda = st.text_input("🔍 Buscar en todos los campos", "")
-
-    df_vista = df.copy()
-    if busqueda:
-        mask = df_vista.apply(lambda fila: fila.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
-        df_vista = df_vista[mask]
-
-    st.dataframe(
-        df_vista, 
-        use_container_width=True, 
-        height=420,
-        column_config={
-            "Valor FOB (USD)": st.column_config.NumberColumn(format="%.2f"),
-            "Sumatoria Fletes/Seguros/Otros (USD)": st.column_config.NumberColumn(format="%.2f"),
-            "Peso Bruto (Kgs)": st.column_config.NumberColumn(format="%.2f"),
-            "Peso Neto (Kgs)": st.column_config.NumberColumn(format="%.2f"),
-            "No. Bultos": st.column_config.NumberColumn(format="%d"),
-        }
-    )
-
-    faltantes_totales = df[df["Campos_no_encontrados"] != ""]
-    if not faltantes_totales.empty:
-        with st.expander(f"⚠️ {len(faltantes_totales)} declaración(es) con campos no detectados (revisión manual)"):
-            st.dataframe(faltantes_totales[["Número de formulario", "Archivo", "Campos_no_encontrados"]], use_container_width=True)
-
-    with st.expander("👁️ Vista previa de una declaración"):
-        opciones = (df["Número de formulario"] + " — " + df["Archivo"]).tolist()
-        seleccion = st.selectbox("Selecciona una declaración", opciones)
-        idx = opciones.index(seleccion)
-        st.json(df.iloc[idx].to_dict())
-
-    st.subheader("3. Descargar resultados")
-    df_export = df.drop(columns=["Campos_no_encontrados"])
-
-    col1, col2 = st.columns(2)
-    with col1:
+        st.subheader("3. Descargar Consolidado")
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Actas_PICIZ')
+        
         st.download_button(
-            "⬇️ Descargar Excel (.xlsx)",
-            data=generar_excel(df_export),
-            file_name=f"dim_procesadas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            label="📊 Descargar Archivo Excel Consolidado",
+            data=buffer.getvalue(),
+            file_name="Actas_PICIZ_Consolidadas.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            use_container_width=True
         )
-    with col2:
-        st.download_button(
-            "⬇️ Descargar CSV (.csv)",
-            data=generar_csv(df_export),
-            file_name=f"dim_procesadas_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-else:
-    st.info("Carga tus archivos PDF/ZIP y presiona **Procesar Documentos** para ver los resultados aquí.")
+
+if __name__ == "__main__":
+    main()

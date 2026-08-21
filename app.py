@@ -27,6 +27,7 @@ st.set_page_config(
     layout="wide",
 )
 
+# LISTA OFICIAL DE COLUMNAS (Sin NIT Declarante, con Manifiesto y Doc. Transporte)
 COLUMNAS = [
     "Número de formulario",
     "NIT Importador",
@@ -121,11 +122,12 @@ def extraer_campos_dim(chunk_texto: str, texto_completo: str, nombre_archivo: st
     razon_social = campo("Razón Social Importador", r"11\s*\.\s*Apellidos y nombres o Raz[oó]n Social\s*([^\n]+)")
     factura = campo("Factura", r"51\s*\.\s*No\.\s*de\s*factura\s*\n\s*(\S+)")
     
-    # Extracción robusta para Casilla 42 y 44
+    # Casilla 42: Manifiesto de carga
     manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.\s*Manifiesto\s+de\s+carga\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
     if not manifiesto_carga:
         manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.\s*Manifiesto\s+de\s+carga[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
 
+    # Casilla 44: Documento de transporte
     documento_transporte = campo("Documento de transporte", r"44\s*\.\s*Documento\s+de\s+transporte\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
     if not documento_transporte:
         documento_transporte = campo("Documento de transporte", r"44\s*\.\s*Documento\s+de\s+transporte[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")

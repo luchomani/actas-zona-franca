@@ -1,187 +1,155 @@
-# -*- coding: utf-8 -*-
-"""
-Procesador Masivo de Actas de Inventario e Inconsistencias (PICIZ) - Completo
-=============================================================================
-Aplicación Streamlit para extraer todos los campos de trazabilidad aduanera 
-y logística de las actas PICIZ en Zona Franca y consolidarlas en Excel.
-"""
-
 import io
 import re
+import openpyxl
 import pandas as pd
 import pdfplumber
 import streamlit as st
 
-# Configuración inicial de la página
 st.set_page_config(
-    page_title="Extractor Completo Actas PICIZ",
-    page_icon="📋",
-    layout="wide",
+    page_title="Extractor de Actas - Zona Franca", layout="wide"
 )
 
-# Definición de las columnas completas solicitadas
-COLUMNAS_ACTAS_COMPLETAS = [
-    "Usuario",
-    "Documento de transporte",
-    "Transito N°",
-    "FMM N°",
-    "FECHA INGRESO ÚLTIMO VEHÍCULO",
-    "Fecha de autorización Tránsito",
-    "Fecha Maxima Finalización",
-    "Acta de Inventario e Inconsistencias PICIZ",
-    "Fecha acta de inventario e inconsistencias",
-    "No. Planilla de Recepción (FECHA)",
-    "Peso Báscula ZF",
-    "BITACORA N°",
-    "RAD SOLICITUD BITACORA",
-    "OBSERVACIONES/ INCONSISTENCIAS",
-    "SI/NO",
-    "Archivo",
-]
 
-def extraer_datos_piciz_completo(pdf_bytes):
-    """
-    Extrae todos los campos específicos de las Actas de Inventario e Inconsistencias de PICIZ.
-    """
-    datos = {}
-    with pdfplumber.open(pdf_bytes) as pdf:
-        texto_completo = []
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                texto_completo.append(t)
-        
-        texto = "\n".join(texto_completo)
-        
-        # 1. Usuario
-        m = re.search(r'(?:Usuario|Importador|Declarante|Razón\s+Social)\s*[:\-]?\s*([^\n]+)', texto, re.IGNORECASE)
-        datos["Usuario"] = m.group(1).strip() if m else ""
-
-        # 2. Documento de transporte
-        m = re.search(r'(?:Documento\s+de\s+transporte|Doc\.?\s+Transporte|Manifiesto)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
-        datos["Documento de transporte"] = m.group(1).strip() if m else ""
-
-        # 3. Transito N°
-        m = re.search(r'(?:Transito\s+N°|Tránsito\s+No\.?)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
-        datos["Transito N°"] = m.group(1).strip() if m else ""
-
-        # 4. FMM N°
-        m = re.search(r'(?:FMM\s+N°|FMM\s+No\.?)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
-        datos["FMM N°"] = m.group(1).strip() if m else ""
-
-        # 5. FECHA INGRESO ÚLTIMO VEHÍCULO
-        m = re.search(r'(?:Fecha\s+ingreso\s+último\s+vehículo|Ingreso\s+Último\s+Vehículo)\s*[:\-]?\s*([0-9]{4}[\-/][0-9]{2}[\-/][0-9]{2}(?:\s+[0-9]{2}:[0-9]{2})?)', texto, re.IGNORECASE)
-        datos["FECHA INGRESO ÚLTIMO VEHÍCULO"] = m.group(1).strip() if m else ""
-
-        # 6. Fecha de autorización Tránsito
-        m = re.search(r'(?:Fecha\s+de\s+autorización\s+tránsito|Autorización\s+Tránsito)\s*[:\-]?\s*([0-9]{4}[\-/][0-9]{2}[\-/][0-9]{2})', texto, re.IGNORECASE)
-        datos["Fecha de autorización Tránsito"] = m.group(1).strip() if m else ""
-
-        # 7. Fecha Maxima Finalización
-        m = re.search(r'(?:Fecha\s+maxima\s+finalización|Fecha\s+Máxima\s+Finalización)\s*[:\-]?\s*([0-9]{4}[\-/][0-9]{2}[\-/][0-9]{2})', texto, re.IGNORECASE)
-        datos["Fecha Maxima Finalización"] = m.group(1).strip() if m else ""
-
-        # 8. Acta de Inventario e Inconsistencias PICIZ
-        m = re.search(r'(?:Acta\s+de\s+Inventario\s+e\s+Inconsistencias\s+PICIZ|Acta\s+No\.?)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
-        datos["Acta de Inventario e Inconsistencias PICIZ"] = m.group(1).strip() if m else ""
-
-        # 9. Fecha acta de inventario e inconsistencias
-        m = re.search(r'(?:Fecha\s+acta\s+de\s+inventario\s+e\s+inconsistencias)\s*[:\-]?\s*([0-9]{4}[\-/][0-9]{2}[\-/][0-9]{2})', texto, re.IGNORECASE)
-        datos["Fecha acta de inventario e inconsistencias"] = m.group(1).strip() if m else ""
-
-        # 10. No. Planilla de Recepción (FECHA)
-        m = re.search(r'(?:No\.?\s+Planilla\s+de\s+Recepción|Planilla\s+Recepción)\s*[:\-]?\s*([A-Za-z0-9\-\/\s]+)', texto, re.IGNORECASE)
-        datos["No. Planilla de Recepción (FECHA)"] = m.group(1).strip() if m else ""
-
-        # 11. Peso Báscula ZF
-        m = re.search(r'(?:Peso\s+Báscula\s+ZF|Peso\s+Báscula)\s*[:\-]?\s*([\d\.\,]+)', texto, re.IGNORECASE)
-        datos["Peso Báscula ZF"] = m.group(1).strip() if m else ""
-
-        # 12. BITACORA N°
-        m = re.search(r'(?:BITACORA\s+N°|Bitácora\s+No\.?)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
-        datos["BITACORA N°"] = m.group(1).strip() if m else ""
-
-        # 13. RAD SOLICITUD BITACORA
-        m = re.search(r'(?:RAD\s+SOLICITUD\s+BITACORA|Radicado\s+Bitácora)\s*[:\-]?\s*([A-Za-z0-9\-]+)', texto, re.IGNORECASE)
-        datos["RAD SOLICITUD BITACORA"] = m.group(1).strip() if m else ""
-
-        # 14. OBSERVACIONES/ INCONSISTENCIAS
-        m = re.search(r'(?:Observaciones\s*/\s*Inconsistencias|Observaciones)\s*[:\-]?\s*([^\n]+)', texto, re.IGNORECASE)
-        datos["OBSERVACIONES/ INCONSISTENCIAS"] = m.group(1).strip() if m else ""
-
-        # 15. SI/NO (Indicador de Inconsistencias)
-        m = re.search(r'\b(SI|NO)\b', texto, re.IGNORECASE)
-        datos["SI/NO"] = m.group(1).upper() if m else ""
-
-    return datos
-
-def main():
-    st.title("📋 Procesador Masivo de Actas de PICIZ (Inventario e Inconsistencias)")
-    st.markdown(
-        """
-        Extracción completa de los campos logísticos, de tránsito, báscula y bitácora 
-        exigidos para las actas de PICIZ en Zona Franca.
-        """
-    )
-
-    st.subheader("1. Cargar documentos PDF")
-    uploaded_files = st.file_uploader(
-        "Seleccione uno o varios archivos PDF de actas", 
-        type=["pdf"], 
-        accept_multiple_files=True
-    )
-
-    if not uploaded_files:
-        st.info("👆 Por favor, cargue los archivos PDF para comenzar.")
-        st.stop()
-
-    st.success(f"✅ Se han cargado **{len(uploaded_files)}** archivo(s).")
-
-    if st.button("🚀 Extraer Datos Completos y Consolidar", type="primary", use_container_width=True):
-        registros = []
-        barra_progreso = st.progress(0)
-        estado_texto = st.empty()
-
-        for idx, file in enumerate(uploaded_files):
-            estado_texto.text(f"Procesando ({idx + 1}/{len(uploaded_files)}): {file.name}")
-            try:
-                res = extraer_datos_piciz_completo(file)
-                res["Archivo"] = file.name
-                registros.append(res)
-            except Exception as e:
-                st.error(f"Error procesando {file.name}: {e}")
-            
-            barra_progreso.progress((idx + 1) / len(uploaded_files))
-
-        estado_texto.empty()
-        barra_progreso.empty()
-
-        df = pd.DataFrame(registros)
-        
-        # Ordenar asegurando todas las columnas solicitadas
-        cols = [c for c in COLUMNAS_ACTAS_COMPLETAS if c in df.columns] + [c for c in df.columns if c not in COLUMNAS_ACTAS_COMPLETAS]
-        df = df[cols]
-
-        st.session_state["df_actas_completo"] = df
-
-    if "df_actas_completo" in st.session_state:
-        df = st.session_state["df_actas_completo"]
-
-        st.subheader("2. Resultados Extraídos")
-        st.dataframe(df, use_container_width=True)
-
-        st.subheader("3. Descargar Consolidado en Excel")
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Actas_PICIZ_Completo')
-        
-        st.download_button(
-            label="📊 Descargar Excel Consolidado",
-            data=buffer.getvalue(),
-            file_name="Actas_PICIZ_Completo.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+def extraer_datos_acta(pdf_file):
+    with pdfplumber.open(pdf_file) as pdf:
+        texto = "\n".join(
+            [page.extract_text() for page in pdf.pages if page.extract_text()]
         )
 
-if __name__ == "__main__":
-    main()
+    # 1. Usuario (Consignado a)
+    usuario = re.search(r"consignados?\s+al\s+(.+)", texto, re.IGNORECASE)
+
+    # 2 y 4. Documento de Transporte y FMM N°
+    doc_form = re.search(
+        r"DOCUMENTO\s+FORMULARIO\s+MERCANC[ÍI]A[\s\S]*?\n\s*([A-Z0-9\.\-_]+)\s+(\d+)",
+        texto,
+        re.IGNORECASE,
+    )
+
+    # 3. Transito N°
+    transito = re.search(
+        r"DECLARACION\s+DE\s+TRANSITO\s+ADUANERO\s*\n?\s*N[úu]mero\s*(\d+)",
+        texto,
+        re.IGNORECASE,
+    )
+
+    # 5. Fecha Ingreso Último Vehículo
+    fecha_ingreso = re.search(
+        r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?\d{2}/\d{2}/\d{4}\s+[\w\d]+\s+[\w\d\.]+\s+(\d{2}/\d{2}/\d{4})",
+        texto,
+        re.IGNORECASE,
+    )
+
+    # 6. Fecha de autorización
+    fecha_auto = re.search(
+        r"Fecha\s+de\s+la\s+autorizaci[oó]n\s+de\s+la\s+operaci[oó]n.*?\b(\d{4}/\d{2}/\d{2})\b",
+        texto,
+        re.IGNORECASE,
+    )
+
+    # 7. Tránsito Fecha Maxima Finalización
+    fecha_limite = re.search(
+        r"Fecha\s+l[ií]mite\s+para\s+finalizar\s+el\s+r[eé]gimen.*?\b(\d{4}/\d{2}/\d{2})\b",
+        texto,
+        re.IGNORECASE,
+    )
+
+    # 8. Acta de Inventario e Inconsistencias PICIZ
+    acta_n = re.search(r"Acta\s+N\.\s*(\d+)", texto, re.IGNORECASE)
+
+    # 9 y 10. Fecha acta de inventario y Fecha Planilla de Recepción (misma fecha)
+    fecha_acta_match = re.search(
+        r"FECHA\s+GENERACI[OÓ]N\s+DEL\s+ACTA:\s*(\d{2}/\d{2}/\d{4})",
+        texto,
+        re.IGNORECASE,
+    )
+    fecha_acta = (
+        fecha_acta_match.group(1).strip() if fecha_acta_match else "N/A"
+    )
+
+    # 11. Peso Báscula ZFC (Segunda cifra de la fila TOTALES)
+    peso_match = re.search(
+        r"TOTALES\s*:\s*[\d\.,]+\s+([\d\.,]+)", texto, re.IGNORECASE
+    ) or re.search(
+        r"DOCUMENTO\s+FORMULARIO[\s\S]*?\n[\s\S]*?\b(\d+(?:\.\d+)?)\s*\n\s*TOTALES",
+        texto,
+        re.IGNORECASE,
+    )
+    peso_bascula = peso_match.group(1).strip() if peso_match else "N/A"
+
+    # 12. OBSERVACIONES / INCONSISTENCIAS
+    obs_match = re.search(
+        r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO\s+FORMULARIO|TOTALES|USUARIO\s+OPERADOR|\Z))",
+        texto,
+        re.IGNORECASE,
+    )
+
+    if obs_match:
+        lineas = obs_match.group(1).split("\n")
+        lineas_limpias = []
+        for line in lineas:
+            line_str = line.strip()
+            if re.match(
+                r"^(Descripción\s*N/A|Bultos|Estado|Términos|Otra)\b",
+                line_str,
+                re.IGNORECASE,
+            ):
+                continue
+            if line_str:
+                lineas_limpias.append(line_str)
+        observaciones = " ".join(lineas_limpias) if lineas_limpias else "N/A"
+    else:
+        observaciones = "N/A"
+
+    return {
+        "Usuario": usuario.group(1).strip() if usuario else "N/A",
+        "Documento de transporte": (
+            doc_form.group(1).strip() if doc_form else "N/A"
+        ),
+        "Transito N°": transito.group(1).strip() if transito else "N/A",
+        "FMM N°": doc_form.group(2).strip() if doc_form else "N/A",
+        "FECHA INGRESO ÚLTIMO VEHÍCULO": (
+            fecha_ingreso.group(1).strip() if fecha_ingreso else "N/A"
+        ),
+        "Fecha de autorización": (
+            fecha_auto.group(1).strip() if fecha_auto else "N/A"
+        ),
+        "Tránsito Fecha Maxima Finalización": (
+            fecha_limite.group(1).strip() if fecha_limite else "N/A"
+        ),
+        "Acta de Inventario e Inconsistencias PICIZ": (
+            acta_n.group(1).strip() if acta_n else "N/A"
+        ),
+        "Fecha acta de inventario e inconsistencias": fecha_acta,
+        "No. Planilla de Recepción (FECHA)": fecha_acta,
+        "Peso Báscula ZFC": peso_bascula,
+        "OBSERVACIONES/ INCONSISTENCIAS": observaciones,
+    }
+
+
+# --- INTERFAZ STREAMLIT ---
+st.title("Extractor de Datos de Actas de Tránsito")
+
+uploaded_files = st.file_uploader(
+    "Carga los archivos PDF de las actas",
+    type=["pdf"],
+    accept_multiple_files=True,
+)
+
+if uploaded_files:
+    datos_extraidos = [extraer_datos_acta(file) for file in uploaded_files]
+    df = pd.DataFrame(datos_extraidos)
+
+    st.subheader("2. Resultados")
+    st.dataframe(df)
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Actas")
+
+    st.download_button(
+        label="📥 Descargar Excel",
+        data=output.getvalue(),
+        file_name="reporte_actas_transito.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

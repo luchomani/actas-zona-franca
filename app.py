@@ -497,11 +497,11 @@ def extraer_datos_acta(pdf_file, nombre_archivo):
         "Archivo": nombre_archivo
     }
 
-def generar_excel_actas(df: pd.DataFrame) -> bytes:
+def generar_excel_actas(df: pd.DataFrame, sheet_name="Actas") -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Actas")
-        ws = writer.sheets["Actas"]
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        ws = writer.sheets[sheet_name]
         n_filas, n_cols = df.shape[0], df.shape[1]
 
         for col_idx in range(1, n_cols + 1):
@@ -573,7 +573,7 @@ def modulo_actas_transito():
         with col1:
             st.download_button(
                 "⬇️ Descargar Reporte Excel (.xlsx)",
-                data=generar_excel_actas(df),
+                data=generar_excel_actas(df, sheet_name="Actas"),
                 file_name=f"actas_zona_franca_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
@@ -610,8 +610,8 @@ def modulo_control_bloqueos():
 
     if 'file_processed' not in st.session_state:
         st.session_state.file_processed = False
-    if 'df_final' not in st.session_state:
-        st.session_state.df_final = None
+    if 'df_final_bloqueos' not in st.session_state:
+        st.session_state.df_final_bloqueos = None
     if 'fecha_ref' not in st.session_state:
         st.session_state.fecha_ref = datetime.date.today()
 
@@ -631,7 +631,7 @@ def modulo_control_bloqueos():
         st.markdown("---")
         if st.button("Limpiar Datos y Sesión", use_container_width=True, key="btn_clean_bloqueos"):
             st.session_state.file_processed = False
-            st.session_state.df_final = None
+            st.session_state.df_final_bloqueos = None
             st.rerun()
 
     if uploaded_file is not None:
@@ -653,154 +653,100 @@ def modulo_control_bloqueos():
                 df = pd.read_excel(uploaded_file, header=header_row_index, dtype=str)
                 df.columns = df.columns.str.strip().str.replace(r'\r\n', '', regex=True)
                 
-                # ACTUALIZADO: Diccionario de extracción con los nombres exactos que solicitas + Comentario
                 columnas_esperadas = {
+                    'NOMBRE COMPANIA': 'Compañía Usuaria',
                     'PLACA': 'Placa',
                     'FECHA REGISTRO': 'Fecha Registro',
-                    'NOMBRE COMPANIA': 'Compañía usuaria',
                     'TIPO INGRESO': 'Tipo Ingreso', 
-                    'NUM DEL DOC. ADUANERO': 'Número Tipo Documento',
-                    'TRANSITO': 'Transito',
-                    'FECHA BASCULA': 'Fecha de Báscula',
-                    'COMENTARIO': 'Comentario',
-                    'COMENTARIOS': 'Comentario'
+                    'NUM DEL DOC. ADUANERO': 'Número Documento',
+                    'TRANSITO': 'Tránsito',
+                    'FECHA BASCULA': 'Fecha de Báscula'
                 }
                 
-                columnas_existentes = {}
-                for col_raw in df.columns:
-                    col_raw_upper = str(col_raw).strip().upper()
-                    if col_raw_upper in columnas_esperadas:
-                        columnas_existentes[col_raw] = columnas_esperadas[col_raw_upper]
-                
+                columnas_existentes = {k: v for k, v in columnas_esperadas.items() if k in df.columns}
                 df_filtrado = df[list(columnas_existentes.keys())].rename(columns=columnas_existentes)
                 
-                # Mantenemos el filtro que automatiza tu tarea: extrae donde sea "FORMULARIO"
                 if 'Tipo Ingreso' in df_filtrado.columns:
                     df_filtrado = df_filtrado[df_filtrado['Tipo Ingreso'].str.contains('FORMULARIO', na=False, case=False)]
                     df_filtrado = df_filtrado.drop(columns=['Tipo Ingreso'])
                 
-                if 'Placa' in df_filtrado.columns:
-                    df_filtrado = df_filtrado.dropna(subset=['Placa'])
-                    df_filtrado['Placa'] = df_filtrado['Placa'].astype(str).str.strip()
-                    df_filtrado = df_filtrado[df_filtrado['Placa'] != '']
+                df_filtrado = df_filtrado.dropna(subset=['Placa'])
+                df_filtrado['Placa'] = df_filtrado['Placa'].astype(str).str.strip()
+                df_filtrado = df_filtrado[df_filtrado['Placa'] != '']
 
-                for col in ['Número Tipo Documento', 'Transito']:
+                for col in ['Número Documento', 'Tránsito']:
                     if col in df_filtrado.columns:
                         df_filtrado[col] = df_filtrado[col].apply(limpiar_numeros)
 
                 for col in ['Fecha Registro', 'Fecha de Báscula']:
                     if col in df_filtrado.columns:
-                        df_filtrado[col] = pd.to_datetime(df_filtrado[col], dayfirst=True, errors='coerce').dt.date
+                        df_filtrado[col] = pd.to_datetime(df_filtrado[col], dayfirst=True, errors='coerce')
 
-                # Deduplicación actualizada con los nombres de columnas correctos
-                columnas_dedup = ['Placa', 'Fecha Registro', 'Compañía usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula']
-                columnas_dedup = [col for col in columnas_dedup if col in df_filtrado.columns]
-                df_filtrado = df_filtrado.drop_duplicates(subset=columnas_dedup, keep='first')
+                # Cálculo de días en operación o vencimientos basado en la fecha de referencia
+                if 'Fecha de Báscula' in df_filtrado.columns:
+                    fecha_base = df_filtrado['Fecha de Báscula']
+                else:
+                    fecha_base = df_filtrado['Fecha Registro']
+                
+                df_filtrado['Días en Proceso'] = (pd.to_datetime(st.session_state.fecha_ref) - fecha_base).dt.days
 
-                # Creación de columnas procesadas de acuerdo a tu imagen
-                df_filtrado['Limite'] = 5
-                
-                def calcular_vencimiento(row):
-                    fecha_base = row['Fecha de Báscula'] if pd.notna(row.get('Fecha de Báscula')) and str(row.get('Fecha de Báscula')) != 'NaT' else row.get('Fecha Registro')
-                    if pd.isna(fecha_base) or str(fecha_base) == 'NaT':
-                        return None
-                    try:
-                        fecha_venc = np.busday_offset(np.datetime64(fecha_base), 5, roll='forward')
-                        return pd.to_datetime(fecha_venc).date()
-                    except:
-                        return None
-                        
-                df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado.apply(calcular_vencimiento, axis=1)
-                
-                def calcular_dias_restantes(fecha_venc):
-                    if pd.isna(fecha_venc) or str(fecha_venc) == 'NaT':
-                        return None
-                    delta = fecha_venc - st.session_state.fecha_ref
-                    return delta.days
-                    
-                df_filtrado['Días restantes'] = df_filtrado['Vencimiento 5 DIAS HABILES'].apply(calcular_dias_restantes)
-                
-                # Orden exacto para que quede igual que en tus imágenes y requerimientos
-                orden_columnas = [
-                    'Placa', 'Fecha Registro', 'Compañía usuaria', 'Número Tipo Documento', 
-                    'Transito', 'Fecha de Báscula', 'Limite', 'Vencimiento 5 DIAS HABILES', 
-                    'Días restantes', 'Comentario'
-                ]
-                
-                # Filtra solo las columnas que existan en el DataFrame resultante
-                orden_columnas = [col for col in orden_columnas if col in df_filtrado.columns]
-                df_final = df_filtrado[orden_columnas].copy()
-                
-                # Asegura que los días se vean limpios como enteros
-                if 'Días restantes' in df_final.columns:
-                    df_final['Días restantes'] = pd.to_numeric(df_final['Días restantes'], errors='coerce').fillna(0).astype(int)
-                
-                st.session_state.df_final = df_final
+                # Formatear las fechas nuevamente a string para una vista amigable
+                for col in ['Fecha Registro', 'Fecha de Báscula']:
+                    if col in df_filtrado.columns:
+                        df_filtrado[col] = df_filtrado[col].dt.strftime('%Y-%m-%d').fillna('')
+
+                st.session_state.df_final_bloqueos = df_filtrado
                 st.session_state.file_processed = True
-
+                st.success("✅ Reporte procesado correctamente.")
+        
         except Exception as e:
-            st.error(f"Error en el procesamiento del archivo: {e}")
+            st.error(f"Error al procesar el archivo: {e}")
 
-    if st.session_state.file_processed and st.session_state.df_final is not None:
-        df_res = st.session_state.df_final
+    # Mostrar Resultados del Módulo 3
+    if st.session_state.file_processed and st.session_state.df_final_bloqueos is not None:
+        df_show = st.session_state.df_final_bloqueos
         
-        # Ajuste de las métricas de días restantes a la nueva columna
-        dias_series = df_res['Días restantes']
-        vencidos = (dias_series <= 0).sum()
-        riesgo = ((dias_series >= 1) & (dias_series <= 2)).sum()
-        a_tiempo = (dias_series >= 3).sum()
+        st.markdown("---")
+        st.subheader("Auditoría de Formularios y Tiempos de Ingreso")
         
-        st.markdown(f"<p style='font-size: 15px; font-weight: 600; color: #12402A;'>Resumen de Estado Operativo — Fecha de Corte: {st.session_state.fecha_ref.strftime('%d/%m/%Y')}</p>", unsafe_allow_html=True)
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Vencidos o Vencen Hoy", int(vencidos))
-        with col2:
-            st.metric("Próximos a Vencer (1-2 días)", int(riesgo))
-        with col3:
-            st.metric("En Plazo (>= 3 días)", int(a_tiempo))
-            
+        col_metric1, col_metric2 = st.columns(2)
+        col_metric1.metric("Total Formularios Procesados", len(df_show))
+        if 'Días en Proceso' in df_show.columns:
+            alertas = len(df_show[df_show['Días en Proceso'] > 5])  # Ejemplo: Más de 5 días
+            col_metric2.metric("Registros con > 5 Días (Posibles Bloqueos)", alertas)
+
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size: 16px; font-weight: 600; color: #12402A;'>Detalle de Registros y Control de Plazos</p>", unsafe_allow_html=True)
-        
-        # Ajuste de la fórmula de color al nombre modificado
-        def apply_executive_colors(row):
-            try:
-                dias = int(row['Días restantes'])
-                if dias <= 0:
-                    return ['background-color: #FEE2E2; color: #991B1B; font-weight: 500;'] * len(row)
-                elif 1 <= dias <= 2:
-                    return ['background-color: #FEF3C7; color: #92400E; font-weight: 500;'] * len(row)
-                elif dias >= 3:
-                    return ['background-color: #ECFDF5; color: #065F46;'] * len(row)
-            except:
-                pass
-            return [''] * len(row)
+        busqueda = st.text_input("🔍 Buscar por Placa o Documento...", "")
+        df_vista = df_show.copy()
+        if busqueda:
+            mask = df_vista.apply(lambda fila: fila.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
+            df_vista = df_vista[mask]
 
-        styled_df = df_res.style.apply(apply_executive_colors, axis=1).format({'Días restantes': '{:d}'})
-        st.dataframe(styled_df, use_container_width=True, height=450, hide_index=True)
+        st.dataframe(df_vista, use_container_width=True, height=400)
         
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_exp1, col_exp2 = st.columns([3, 1])
-        with col_exp2:
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                styled_df.to_excel(writer, index=False, sheet_name='Control_Bloqueos')
-            excel_data = output.getvalue()
-
+        st.markdown("---")
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
             st.download_button(
-                label="Descargar Reporte Excel",
-                data=excel_data,
-                file_name=f"Control_Bloqueos_{st.session_state.fecha_ref}.xlsx",
+                "⬇️ Descargar Reporte Excel (.xlsx)",
+                data=generar_excel_actas(df_show, sheet_name="Bloqueos"),
+                file_name=f"control_bloqueos_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                use_container_width=True,
+                key="dl_excel_bloqueos"
             )
-    else:
-        st.info("Cargue un archivo en la barra lateral para iniciar el procesamiento de control aduanero.")
-
+        with col_dl2:
+            st.download_button(
+                "⬇️ Descargar Reporte CSV (.csv)",
+                data=df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+                file_name=f"control_bloqueos_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="dl_csv_bloqueos"
+            )
 
 # ==========================================
-# ENRUTADOR PRINCIPAL
+# RUTEO PRINCIPAL (EJECUCIÓN DE MÓDULOS)
 # ==========================================
 if opcion_modulo == "Procesador de DIM":
     modulo_procesador_dim()

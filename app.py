@@ -1,48 +1,30 @@
+# -*- coding: utf-8 -*-
+"""
+Procesador Masivo de Actas de Inventario e Inconsistencias
+================================================================================
+Panel Corporativo Optimizado — Zona Franca Santander / Cúcuta
+"""
+
 import io
 import re
 import os
-import zipfile
-import datetime
 import base64
-import fitz  # PyMuPDF
-import pdfplumber
+from datetime import datetime
+
 import pandas as pd
-import numpy as np
+import pdfplumber
 import streamlit as st
-from PIL import Image
-from io import BytesIO
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-# ==========================================
-# 1. CARGA DEL ÍCONO PESTAÑA NAVEGADOR (FAVICON)
-# ==========================================
-icono_pagina = "🏢"
-archivos_favicon = [
-    "LOGO SANTANDER.jpg",
-    "LOGO ZFS-ZFC.jpeg",
-    "logo.jpeg",
-    "logo.jpg",
-    "logo.png",
-    "favicon.ico"
-]
+# --------------------------------------------------------------------------
+# Configuración general y Estilos Corporativos con Fondo Personalizado
+# --------------------------------------------------------------------------
 
-for archivo in archivos_favicon:
-    if os.path.exists(archivo):
-        try:
-            icono_pagina = Image.open(archivo)
-            break
-        except Exception:
-            pass
-
-# ==========================================
-# 2. CONFIGURACIÓN GENERAL Y ESTILOS
-# ==========================================
 st.set_page_config(
-    page_title="Sistema de Automatización Aduanera | Zona Franca",
-    page_icon=icono_pagina,
+    page_title="Extractor de Actas | Zona Franca",
+    page_icon="🏢",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
 fondo_css = ""
@@ -59,38 +41,37 @@ if os.path.exists("Fondo ZFC.png"):
     }}
     """
 else:
-    fondo_css = ".stApp { background-color: #F8F9FA; }"
+    fondo_css = """
+    .stApp {
+        background-color: #F4F7F6;
+    }
+    """
 
 st.markdown(f"""
-    <style>
+<style>
     :root {{
-        --zf-green-dark: #12402A;
-        --zf-green-medium: #1F4E3D;
+        --zf-green-dark: #1B4D3E;
+        --zf-green-medium: #2C6B56;
         --zf-olive: #8A9A28;
         --zf-card-bg: #FFFFFF;
         --zf-text-main: #2C3E50;
     }}
+
     {fondo_css}
 
-    .executive-title {{
+    h1, h2, h3 {{
+        color: var(--zf-green-dark) !important;
         font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        color: var(--zf-green-dark);
-        font-size: 26px;
-        font-weight: 700;
-        margin-bottom: 0px;
-        letter-spacing: -0.5px;
     }}
-    .executive-subtitle {{
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        color: #4B5563;
-        font-size: 14px;
-        margin-top: 5px;
-        margin-bottom: 20px;
+
+    div[data-testid="stVerticalBlock"] > div[style*="border"] {{
+        background-color: var(--zf-card-bg);
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        border: 1px solid #E1E8E5 !important;
+        padding: 20px;
     }}
-    [data-testid="stSidebar"] {{
-        background-color: #F3F4F6;
-        border-right: 1px solid #E5E7EB;
-    }}
+
     .stButton>button {{
         background-color: var(--zf-green-dark);
         color: white;
@@ -101,413 +82,209 @@ st.markdown(f"""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         transition: all 0.3s ease;
     }}
+
     .stButton>button:hover {{
         background-color: var(--zf-green-medium);
         color: white;
         border: none;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     }}
-    </style>
+
+    div[data-testid="stMetricValue"] {{
+        color: var(--zf-green-dark);
+        font-weight: 700;
+    }}
+    div[data-testid="stMetricLabel"] {{
+        color: #556B2F;
+        font-weight: 600;
+    }}
+
+    .stDataFrame {{
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #E1E8E5;
+    }}
+</style>
 """, unsafe_allow_html=True)
 
-# ESTILOS OPENPYXL COMPARTIDOS
-HEADER_FILL = PatternFill(start_color="1B4D3E", end_color="1B4D3E", fill_type="solid")
-HEADER_FONT = Font(color="FFFFFF", bold=True)
-TOTAL_FILL = PatternFill(start_color="D9E1D9", end_color="D9E1D9", fill_type="solid")
-THIN_BORDER = Border(
-    left=Side(style="thin", color="D9D9D9"),
-    right=Side(style="thin", color="D9D9D9"),
-    top=Side(style="thin", color="D9D9D9"),
-    bottom=Side(style="thin", color="D9D9D9")
-)
+# --------------------------------------------------------------------------
+# Función de Extracción Robusta y Flexible de Datos (pdfplumber)
+# --------------------------------------------------------------------------
 
-# ==========================================
-# 3. NAVEGACIÓN EN LA BARRA LATERAL (LOGO DUAL ZFS-ZFC)
-# ==========================================
-with st.sidebar:
-    archivos_logo_sidebar = [
-        "LOGO ZFS-ZFC.jpeg",
-        "LOGO ZFS-ZFC.jpg",
-        "LOGO ZFS-ZFC.png",
-        "LOGO SANTANDER.jpg",
-        "logo.jpeg"
-    ]
-    
-    logo_encontrado = False
-    for filename in archivos_logo_sidebar:
-        if os.path.exists(filename):
-            st.image(filename, use_container_width=True)
-            logo_encontrado = True
-            break
-            
-    if not logo_encontrado:
-        st.markdown("<h3 style='color: #12402A; text-align: center;'>ZONA FRANCA</h3>", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("**Navegación Operativa**")
-    st.caption("Seleccione el módulo de gestión:")
-
-    opcion_modulo = st.radio(
-        label="Módulo de Gestión",
-        options=[
-            "Procesador de DIM",
-            "Actas de Tránsito / PICIZ",
-            "Control Bloqueo Formularios"
-        ],
-        label_visibility="collapsed"
-    )
-
-    st.markdown("<hr style='margin: 20px 0 10px 0; border: 1px solid #E5E7EB;'>", unsafe_allow_html=True)
-    st.markdown("""
-        <div style='font-size: 12px; color: #6B7280; line-height: 1.4;'>
-            <b>Zona Franca de Cúcuta</b><br>
-            <i>Operada por Zona Franca Santander</i><br>
-            Sistema de Automatización Aduanera
-        </div>
-    """, unsafe_allow_html=True)
-
-
-# ==========================================
-# MÓDULO 1: PROCESADOR DE DIM (FORMULARIO 500)
-# ==========================================
-COLUMNAS_DIM = [
-    "Número de formulario", "NIT Importador", "Razón Social Importador", "Factura",
-    "Manifiesto de carga", "Documento de transporte", "Cod. País Procedencia",
-    "Cod. Modo Transporte", "Código de Bandera", "Tasa de Cambio", "Subpartida Arancelaria",
-    "Cod. País Origen", "Cod. País Compra", "Peso Bruto (Kgs)", "Peso Neto (Kgs)",
-    "Código de Embalaje", "Cod. Unidad Comercial (76)", "Cantidad (77)", "No. Bultos",
-    "Valor FOB (USD)", "Sumatoria Fletes/Seguros/Otros (USD)", "Acta de Inspección No.",
-    "Levante No.", "Fecha del Levante", "Archivo", "Campos_no_encontrados"
-]
-MONTO = r"[\d\.,]+"
-ENTERO_MILES = r"[\d\.,]+"
-
-def limpiar_monto_dim(val_str):
-    if not val_str:
-        return 0.0
-    val_str = str(val_str).strip()
-    val_str = re.sub(r'[^\d.,]', '', val_str)
-    if not val_str:
-        return 0.0
-
-    if ',' in val_str:
-        val_str = val_str.replace('.', '').replace(',', '.')
-    else:
-        partes = val_str.split('.')
-        if len(partes) == 2 and len(partes[1]) == 3 and len(partes[0]) <= 3:
-            val_str = val_str.replace('.', '')
-        elif len(partes) > 2:
-            val_str = "".join(partes[:-1]) + "." + partes[-1] if len(partes[-1]) == 2 else val_str.replace('.', '')
-
-    try:
-        return float(val_str)
-    except ValueError:
-        return 0.0
-
-def _buscar_dim(patron, texto, flags=re.IGNORECASE, grupo=1):
-    m = re.search(patron, texto, flags)
-    return m.group(grupo).strip() if m else None
-
-def dividir_dims(texto: str):
-    partes = re.split(r"(?=Declaraci[oó]n de Importaci[oó]n)", texto, flags=re.IGNORECASE)
-    return [p for p in partes if re.search(r"N[uú]mero de formulario", p, re.IGNORECASE)]
-
-def extraer_campos_dim(chunk_texto: str, texto_completo: str, nombre_archivo: str) -> dict:
-    faltantes = []
-    def campo(nombre, patron, grupo=1, default=""):
-        valor = _buscar_dim(patron, chunk_texto, grupo=grupo) or _buscar_dim(patron, texto_completo, grupo=grupo)
-        if not valor:
-            faltantes.append(nombre)
-            return default
-        return " ".join(valor.split())
-
-    numero_formulario = campo("Número de formulario", r"4\s*\.\s*N[uú]mero de formulario\s*\n?\s*(\S+)")
-    nit_importador = campo("NIT Importador", r"5\s*\.\s*N[uú]mero de Identificaci[oó]n Tributaria \(NIT\)\s*(\d{9,10})")
-    razon_social = campo("Razón Social Importador", r"11\s*\.\s*Apellidos y nombres o Raz[oó]n Social\s*([^\n]+)")
-    factura = campo("Factura", r"51\s*\.\s*No\.\s*de\s*factura\s*\n\s*(\S+)")
-    
-    manifiesto_carga = campo("Manifiesto de carga", r"42\s*\.?\s*Manifiesto\s+de\s+carga\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)") or campo("Manifiesto de carga", r"42\s*\.?\s*Manifiesto\s+de\s+carga[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-    documento_transporte = campo("Documento de transporte", r"44\s*\.?\s*Documento\s+de\s+transporte\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)") or campo("Documento de transporte", r"44\s*\.?\s*Documento\s+de\s+transporte[^\n]*\n\s*(?:No\.?\s*)?([A-Za-z0-9\-]+)")
-
-    cod_pais_procedencia = campo("Cod. País Procedencia", r"53\s*\.\s*(?:C[oó]d\.?\s*)?pa[ií]s\s+(?:de\s+)?procedencia\s*([A-Za-z0-9]{2,3})")
-    cod_modo_transporte = campo("Cod. Modo Transporte", r"54\s*\.\s*Cod\.\s*Modo\s*Transporte\s*(\d)")
-    codigo_bandera = campo("Código de Bandera", r"55\s*\.\s*C[oó]digo\s+(?:de\s+)?bandera\s*([A-Za-z0-9]{2,3})")
-    tasa_cambio = campo("Tasa de Cambio", r"Tasa de cambio\s*\$?\s*cvs\.?\s*\n?\s*([\d.,]+)")
-    subpartida = campo("Subpartida Arancelaria", r"59\s*\.\s*Subpartida arancelaria\s*(\d{10})")
-    cod_pais_origen = campo("Cod. País Origen", r"66\s*\.\s*(?:C[oó]d\.?\s*)?pa[ií]s\s+(?:de\s+)?origen\s*([A-Za-z0-9]{2,3})")
-    cod_pais_compra = campo("Cod. País Compra", r"70\s*\.\s*Cod\s*\.\s*pa[ií]s\s*\n?\s*compra\s*(\d{2,3})")
-    codigo_embalaje = campo("Código de Embalaje", r"73\s*\.\s*C[oó]digo\s*\n?\s*embalaje\s*([A-Za-z0-9]{1,4})")
-    
-    peso_bruto = limpiar_monto_dim(campo("Peso Bruto (Kgs)", r"71\s*\.\s*Peso bruto kgs\.\s*dcms\.\s*(" + MONTO + ")"))
-    peso_neto = limpiar_monto_dim(campo("Peso Neto (Kgs)", r"72\s*\.\s*Peso neto kgs\.\s*dcms\.\s*(" + MONTO + ")"))
-    valor_fob = limpiar_monto_dim(campo("Valor FOB (USD)", r"78\s*\.\s*Valor FOB USD\s*(" + MONTO + ")"))
-    sumatoria_fletes = limpiar_monto_dim(campo("Sumatoria Fletes/Seguros/Otros (USD)", r"82\s*\.\s*Sumatoria de fletes,?\s*seguros\s*\n?\s*y otros gastos USD\s*(" + MONTO + ")"))
-    
-    cod_unidad_comercial = campo("Cod. Unidad Comercial (76)", r"76\s*\.\s*Cod\.?\s*unidad\s*comercial\s*[\r\n\s]+([A-Za-z]{1,4})\b") or campo("Cod. Unidad Comercial (76)", r"76\s*\.\s*Cod\.?\s*unidad\s*comercial\s+([A-Za-z]{1,4})\b")
-    cantidad_str = campo("Cantidad (77)", r"77\s*\.\s*Cantidad\s*(?:dcms\.?)?\s*[\r\n\s]+(" + MONTO + ")") or campo("Cantidad (77)", r"77\s*\.\s*Cantidad\s*(?:dcms\.?)?\s*(" + MONTO + ")")
-    cantidad_comercial = limpiar_monto_dim(cantidad_str)
-
-    n_bultos_str = campo("No. Bultos", r"74\s*\.\s*No\.\s*bultos\s*(" + ENTERO_MILES + ")")
-    try:
-        no_bultos = int(re.sub(r'[^\d]', '', n_bultos_str)) if n_bultos_str else 0
-    except ValueError:
-        no_bultos = 0
-
-    m_acta = re.search(r"ACTA\s+DE\s+INSPECCI[OÓ]N\s*(?:No\.?|Número)?\s*[:\.]?\s*([0-9]{8,15})", texto_completo, re.IGNORECASE)
-    acta_inspeccion = m_acta.group(1).strip() if m_acta else ""
-
-    m_lev_box = re.search(r"134\.?\s*Levante\s+No\.?\s*([0-9]{8,15})", chunk_texto, re.IGNORECASE) or re.search(r"(?:Levante|Auto(?:rización)?)\s*(?:No\.?|Número)?\s*[:\.]?\s*([0-9]{8,15})", texto_completo, re.IGNORECASE)
-    levante_no = m_lev_box.group(1).strip() if m_lev_box else ""
-    if not levante_no:
-        faltantes.append("Levante No.")
-
-    fecha_levante = campo("Fecha del Levante", r"135\.?\s*Fecha[^\d\n]*(\d{4}\s*[-/\.]\s*\d{2}\s*[-/\.]\s*\d{2})")
-    if not fecha_levante:
-        m_fec = re.search(r"\b(20\d{2}[-/\.](?:0[1-9]|1[0-2])[-/\.](?:0[1-9]|[12]\d|3[01]))\b", texto_completo)
-        if m_fec:
-            fecha_levante = m_fec.group(1)
-            if "Fecha del Levante" in faltantes:
-                faltantes.remove("Fecha del Levante")
-
-    if fecha_levante:
-        fecha_levante = re.sub(r"\s+", "", fecha_levante)
-        fecha_levante = re.sub(r"[/.]", "-", fecha_levante)
-
-    return {
-        "Número de formulario": numero_formulario, "NIT Importador": nit_importador,
-        "Razón Social Importador": razon_social, "Factura": factura,
-        "Manifiesto de carga": manifiesto_carga, "Documento de transporte": documento_transporte,
-        "Cod. País Procedencia": cod_pais_procedencia, "Cod. Modo Transporte": cod_modo_transporte,
-        "Código de Bandera": codigo_bandera, "Tasa de Cambio": tasa_cambio,
-        "Subpartida Arancelaria": subpartida, "Cod. País Origen": cod_pais_origen,
-        "Cod. País Compra": cod_pais_compra, "Peso Bruto (Kgs)": peso_bruto,
-        "Peso Neto (Kgs)": peso_neto, "Código de Embalaje": codigo_embalaje,
-        "Cod. Unidad Comercial (76)": cod_unidad_comercial, "Cantidad (77)": cantidad_comercial,
-        "No. Bultos": no_bultos, "Valor FOB (USD)": valor_fob,
-        "Sumatoria Fletes/Seguros/Otros (USD)": sumatoria_fletes,
-        "Acta de Inspección No.": acta_inspeccion, "Levante No.": levante_no,
-        "Fecha del Levante": fecha_levante, "Archivo": nombre_archivo,
-        "Campos_no_encontrados": ", ".join(faltantes) if faltantes else ""
-    }
-
-def extraer_texto_pdf(data: bytes) -> str:
-    with fitz.open(stream=data, filetype="pdf") as doc:
-        return "\n".join(page.get_text() for page in doc)
-
-def obtener_pdfs_desde_upload(uploaded_file):
-    nombre, contenido = uploaded_file.name, uploaded_file.read()
-    if nombre.lower().endswith(".zip"):
-        pdfs = []
-        with zipfile.ZipFile(io.BytesIO(contenido)) as zf:
-            for info in zf.infolist():
-                if info.filename.lower().endswith(".pdf") and not info.is_dir():
-                    pdfs.append((info.filename.split("/")[-1], zf.read(info.filename)))
-        return pdfs
-    elif nombre.lower().endswith(".pdf"):
-        return [(nombre, contenido)]
-    return []
-
-def procesar_archivos_dim(uploaded_files, progress_callback=None) -> pd.DataFrame:
-    filas, tareas = [], []
-    for uf in uploaded_files:
-        tareas.extend(obtener_pdfs_desde_upload(uf))
-
-    total = max(len(tareas), 1)
-    for i, (nombre_pdf, data) in enumerate(tareas, start=1):
-        try:
-            texto_completo = extraer_texto_pdf(data)
-            dim_chunks = dividir_dims(texto_completo) or [texto_completo]
-            for chunk in dim_chunks:
-                filas.append(extraer_campos_dim(chunk, texto_completo, nombre_pdf))
-        except Exception as exc: 
-            fila = {c: "" for c in COLUMNAS_DIM}
-            fila["Archivo"], fila["Campos_no_encontrados"] = nombre_pdf, f"ERROR: {exc}"
-            filas.append(fila)
-        if progress_callback:
-            progress_callback(i / total, nombre_pdf)
-
-    if not filas:
-        return pd.DataFrame(columns=COLUMNAS_DIM)
-
-    df = pd.DataFrame(filas, columns=COLUMNAS_DIM)
-    if "Número de formulario" in df.columns:
-        df["Número de formulario"] = df["Número de formulario"].astype(str).str.strip()
-        df = df[df["Número de formulario"].notna() & (df["Número de formulario"] != "") & (df["Número de formulario"].str.lower() != "nan")]
-        df = df.drop_duplicates(subset=["Número de formulario"], keep="last").reset_index(drop=True)
-    return df
-
-def generar_excel_dim(df: pd.DataFrame) -> bytes:
-    buffer = io.BytesIO()
-    df_export = df.copy()
-    if not df_export.empty:
-        total_row = {c: "" for c in df_export.columns}
-        total_row["Número de formulario"] = "TOTALES CONSOLIDADOS"
-        total_row["Valor FOB (USD)"] = df_export["Valor FOB (USD)"].sum()
-        total_row["Sumatoria Fletes/Seguros/Otros (USD)"] = df_export["Sumatoria Fletes/Seguros/Otros (USD)"].sum()
-        total_row["Peso Bruto (Kgs)"] = df_export["Peso Bruto (Kgs)"].sum()
-        total_row["Peso Neto (Kgs)"] = df_export["Peso Neto (Kgs)"].sum()
-        total_row["No. Bultos"] = df_export["No. Bultos"].sum()
-        if "Cantidad (77)" in df_export.columns:
-            total_row["Cantidad (77)"] = df_export["Cantidad (77)"].sum()
-        df_export = pd.concat([df_export, pd.DataFrame([total_row])], ignore_index=True)
-
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_export.to_excel(writer, index=False, sheet_name="DIM")
-        ws = writer.sheets["DIM"]
-        n_filas, n_cols = df_export.shape[0], df_export.shape[1]
-
-        for col_idx in range(1, n_cols + 1):
-            celda = ws.cell(row=1, column=col_idx)
-            celda.fill, celda.font, celda.border = HEADER_FILL, HEADER_FONT, THIN_BORDER
-            celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-        for row_idx in range(2, n_filas + 2):
-            for col_idx in range(1, n_cols + 1):
-                celda = ws.cell(row=row_idx, column=col_idx)
-                celda.border = THIN_BORDER
-                celda.alignment = Alignment(vertical="top", wrap_text=True)
-                if isinstance(celda.value, (int, float)):
-                    celda.number_format = '#,##0.00'
-                if row_idx == n_filas + 1:
-                    celda.fill, celda.font = TOTAL_FILL, Font(bold=True)
-
-        for col_idx, columna in enumerate(df_export.columns, start=1):
-            longitudes = [len(str(columna))] + [len(str(v)) for v in df_export[columna].astype(str).tolist()]
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max(longitudes) + 3, 45)
-        ws.freeze_panes = "A2"
-    return buffer.getvalue()
-
-def modulo_procesador_dim():
-    st.markdown("<p class='executive-title'>Procesador de Declaración de Importación (DIM)</p>", unsafe_allow_html=True)
-    st.markdown("<p class='executive-subtitle'>Módulo masivo para extracción y consolidación de datos del Formulario 500 DIAN.</p>", unsafe_allow_html=True)
-    
-    if "df_resultado_dim" not in st.session_state:
-        st.session_state.df_resultado_dim = pd.DataFrame(columns=COLUMNAS_DIM)
-    if "uploader_key_dim" not in st.session_state:
-        st.session_state.uploader_key_dim = 0
-
-    uploaded_files = st.file_uploader(
-        "Carga tus archivos PDF individuales o paquetes comprimidos .ZIP",
-        type=["pdf", "zip"],
-        accept_multiple_files=True,
-        key=f"dim_uploader_{st.session_state.uploader_key_dim}"
-    )
-
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        procesar = st.button("🚀 Procesar Documentos DIM", type="primary", use_container_width=True)
-    with col_btn2:
-        limpiar = st.button("🧹 Limpiar Panel DIM", use_container_width=True)
-
-    if limpiar:
-        st.session_state.df_resultado_dim = pd.DataFrame(columns=COLUMNAS_DIM)
-        st.session_state.uploader_key_dim += 1
-        st.rerun()
-
-    if procesar:
-        if not uploaded_files:
-            st.warning("Por favor carga al menos un archivo PDF o ZIP.")
-        else:
-            progreso = st.progress(0.0, text="Iniciando motor de extracción...")
-            df = procesar_archivos_dim(uploaded_files, progress_callback=lambda pct, nom: progreso.progress(pct, text=f"Procesando: {nom}"))
-            progreso.empty()
-            st.session_state.df_resultado_dim = df
-            st.success(f"✅ Extracción completada. {len(df)} declaración(es) procesada(s).")
-
-    df = st.session_state.df_resultado_dim
-    if not df.empty:
-        st.markdown("---")
-        st.subheader("Consolidado y Analítica de Carga")
-        cols_totales = st.columns(4)
-        cols_totales[0].metric("Total Valor FOB (USD)", f"${df['Valor FOB (USD)'].sum():,.2f}")
-        cols_totales[1].metric("Total Fletes/Seguros (USD)", f"${df['Sumatoria Fletes/Seguros/Otros (USD)'].sum():,.2f}")
-        cols_totales[2].metric("Total Peso Bruto (Kgs)", f"{df['Peso Bruto (Kgs)'].sum():,.2f}")
-        cols_totales[3].metric("Total Peso Neto (Kgs)", f"{df['Peso Neto (Kgs)'].sum():,.2f}")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        busqueda = st.text_input("🔍 Búsqueda rápida en el consolidado...", "")
-        df_vista = df.copy()
-        if busqueda:
-            mask = df_vista.apply(lambda fila: fila.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
-            df_vista = df_vista[mask]
-
-        st.dataframe(df_vista, use_container_width=True, height=400)
-        
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                "⬇️ Descargar Reporte Excel (.xlsx)",
-                data=generar_excel_dim(df.drop(columns=["Campos_no_encontrados"])),
-                file_name=f"dim_zona_franca_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        with col2:
-            st.download_button(
-                "⬇️ Descargar Reporte CSV (.csv)",
-                data=df.drop(columns=["Campos_no_encontrados"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
-                file_name=f"dim_zona_franca_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-
-
-# ==========================================
-# MÓDULO 2: ACTAS DE TRÁNSITO / PICIZ
-# ==========================================
 def extraer_datos_acta(pdf_file, nombre_archivo):
     with pdfplumber.open(pdf_file) as pdf:
-        texto = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+        texto = "\n".join(
+            [page.extract_text() for page in pdf.pages if page.extract_text()]
+        )
 
-    usuario = re.search(r"consignados?\s+al\s*\n?\s*([A-Z0-9\.\-\s]+?)(?=\s+y\s+amparado|\s+DECLARACION|\n\s*DECLARACION|$)", texto, re.IGNORECASE)
-    val_usuario = " ".join(usuario.group(1).strip().split()) if usuario else "N/A"
+    # 1. Usuario (Consignado a)
+    usuario = re.search(
+        r"consignados?\s+al\s*\n?\s*([A-Z0-9\.\-\s]+?)(?=\s+y\s+amparado|\s+DECLARACION|\n\s*DECLARACION|$)",
+        texto, re.IGNORECASE,
+    )
+    val_usuario = usuario.group(1).strip() if usuario else "N/A"
+    val_usuario = " ".join(val_usuario.split())
 
-    doc_form = re.search(r"DOCUMENTO\s+FORMULARIO\s+MERCANC[ÍI]A[\s\S]*?\n\s*([A-Z0-9\.\-_]+)\s+(\d+)", texto, re.IGNORECASE) or re.search(r"\b([A-Z0-9\.\-_]{5,})\s+(\d{7,10})\b", texto)
-    transito = re.search(r"DECLARACION\s+DE\s+TRANSITO\s+ADUANERO\s*\n?\s*(?:Número|N[úu]mero)?\s*[:\.]?\s*(\d+)", texto, re.IGNORECASE)
-    fecha_ingreso = re.search(r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?(\d{2}/\d{2}/\d{4})", texto, re.IGNORECASE)
-    fecha_auto = re.search(r"Fecha\s+de\s+la\s+autorizaci[oó]n\s+de\s+la\s+operaci[oó]n[^\d]*(\d{4}[-/]\d{2}[-/]\d{2})", texto, re.IGNORECASE)
-    fecha_limite = re.search(r"Fecha\s+l[ií]mite\s+para\s+finalizar\s+el\s+r[eé]gimen[^\d]*(\d{4}[-/]\d{2}[-/]\d{2})", texto, re.IGNORECASE)
+    # 2 y 4. Documento de Transporte y FMM N°
+    doc_form = re.search(
+        r"DOCUMENTO\s+FORMULARIO\s+MERCANC[ÍI]A[\s\S]*?\n\s*([A-Z0-9\.\-_]+)\s+(\d+)",
+        texto, re.IGNORECASE,
+    )
+    if not doc_form:
+        doc_form = re.search(r"\b([A-Z0-9\.\-_]{5,})\s+(\d{7,10})\b", texto)
+
+    # 🔧 FIX: 3. Tránsito N° — Cascada de 4 estrategias
+    # Antes solo se reconocía "DECLARACION DE TRANSITO ADUANERO", pero los
+    # reportes también vienen con "CONTINUACION DE VIAJE". Se aplica cascada.
+    val_transito = "N/A"
+
+    # Estrategia 1: "amparado(s) en la <DOC> \n número XXXXXXXXXX de la aduana"
+    m_trans = re.search(
+        r"amparado\(?s?\)?\s+en\s+la\s+.{0,250}?n[uú]mero\s+(\d{8,20})",
+        texto, re.IGNORECASE | re.DOTALL,
+    )
+
+    # Estrategia 2: "Del documento de <DOC> \n Número XXXXXXXXXX"
+    if not m_trans:
+        m_trans = re.search(
+            r"Del\s+documento\s+de\s+.{0,150}?N[uú]mero\s+(\d{8,20})",
+            texto, re.IGNORECASE | re.DOTALL,
+        )
+
+    # Estrategia 3: número (10-20 dígitos) seguido de "de la aduana"
+    if not m_trans:
+        m_trans = re.search(
+            r"(\d{10,20})\s+de\s+la\s+aduana",
+            texto, re.IGNORECASE,
+        )
+
+    # Estrategia 4: Fallback genérico — cualquier doc de tránsito seguido de número
+    if not m_trans:
+        m_trans = re.search(
+            r"(?:DECLARACION\s+DE\s+TRANSITO\s+ADUANERO|CONTINUACION\s+DE\s+VIAJE|TRANSITO\s+ADUANERO)"
+            r"[^\d]{0,150}?(\d{8,20})",
+            texto, re.IGNORECASE | re.DOTALL,
+        )
+
+    if m_trans:
+        val_transito = m_trans.group(1).strip()
+
+    # 5. Fecha Ingreso Último Vehículo
+    fecha_ingreso = re.search(
+        r"ACTA\s+DE\s+DESPRECINTAJE[\s\S]*?(\d{2}/\d{2}/\d{4})",
+        texto, re.IGNORECASE,
+    )
+
+    # 6. Fecha de autorización
+    fecha_auto = re.search(
+        r"Fecha\s+de\s+la\s+autorizaci[oó]n\s+de\s+la\s+operaci[oó]n[^\d]*(\d{4}[-/]\d{2}[-/]\d{2})",
+        texto, re.IGNORECASE,
+    )
+
+    # 7. Tránsito Fecha Máxima Finalización
+    fecha_limite = re.search(
+        r"Fecha\s+l[ií]mite\s+para\s+finalizar\s+el\s+r[eé]gimen[^\d]*(\d{4}[-/]\d{2}[-/]\d{2})",
+        texto, re.IGNORECASE,
+    )
+
+    # 8. Acta de Inventario e Inconsistencias PICIZ (Acta N.)
     acta_n = re.search(r"Acta\s+N\.?\s*(\d+)", texto, re.IGNORECASE)
-    fecha_acta_m = re.search(r"FECHA\s+GENERACI[OÓ]N\s+DEL\s+ACTA:\s*(\d{2}/\d{2}/\d{4})", texto, re.IGNORECASE)
-    fecha_acta = fecha_acta_m.group(1).strip() if fecha_acta_m else "N/A"
 
-    peso_match = re.search(r"TOTALES\s*:\s*[\d\.,]+\s+([\d\.,]+)", texto, re.IGNORECASE) or re.search(r"TOTALES\s*:\s*([\d\.,]+)", texto, re.IGNORECASE)
-    peso_bascula = peso_match.group(1).strip() if peso_match else "N/A"
+    # 9 y 10. Fecha acta de inventario y Fecha Planilla de Recepción (misma fecha)
+    fecha_acta_match = re.search(
+        r"FECHA\s+GENERACI[OÓ]N\s+DEL\s+ACTA:\s*(\d{2}/\d{2}/\d{4})",
+        texto, re.IGNORECASE,
+    )
+    fecha_acta = fecha_acta_match.group(1).strip() if fecha_acta_match else "N/A"
 
-    obs_match = re.search(r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO|TOTALES|USUARIO\s+OPERADOR|FECHA\s+GENERACI|\Z))", texto, re.IGNORECASE)
+    # 11. Peso Báscula ZFC
+    peso_match = re.search(
+        r"TOTALES\s*:\s*[\d\.,]+\s+([\d\.,]+)", texto, re.IGNORECASE,
+    ) or re.search(
+        r"TOTALES\s*:\s*([\d\.,]+)", texto, re.IGNORECASE,
+    )
+
+    if peso_match:
+        peso_bascula = peso_match.group(1).strip()
+    else:
+        peso_bascula = "N/A"
+
+    # 12. OBSERVACIONES / INCONSISTENCIAS
+    obs_match = re.search(
+        r"Observaciones[\s\S]*?\n([\s\S]*?)(?=\n\s*(?:DOCUMENTO|TOTALES|USUARIO\s+OPERADOR|FECHA\s+GENERACI|\Z))",
+        texto, re.IGNORECASE,
+    )
+
     if obs_match:
-        lineas_limpias = [l.strip() for l in obs_match.group(1).split("\n") if l.strip() and not re.match(r"^(Descripción\s*N/A|Bultos|Estado|Términos|Otra)\b", l.strip(), re.IGNORECASE)]
+        lineas = obs_match.group(1).split("\n")
+        lineas_limpias = []
+        for line in lineas:
+            line_str = line.strip()
+            if re.match(
+                r"^(Descripción\s*N/A|Bultos|Estado|Términos|Otra)\b",
+                line_str, re.IGNORECASE,
+            ):
+                continue
+            if line_str:
+                lineas_limpias.append(line_str)
         observaciones = " ".join(lineas_limpias) if lineas_limpias else "N/A"
     else:
         observaciones = "N/A"
 
     return {
         "Usuario": val_usuario,
-        "Documento de transporte": doc_form.group(1).strip() if doc_form else "N/A",
-        "Transito N°": transito.group(1).strip() if transito else "N/A",
+        "Documento de transporte": (
+            doc_form.group(1).strip() if doc_form else "N/A"
+        ),
+        "Transito N°": val_transito,  # 🔧 FIX: usa la cascada de 4 estrategias
         "FMM N°": doc_form.group(2).strip() if doc_form else "N/A",
-        "FECHA INGRESO ÚLTIMO VEHÍCULO": fecha_ingreso.group(1).strip() if fecha_ingreso else "N/A",
-        "Fecha de autorización": fecha_auto.group(1).strip() if fecha_auto else "N/A",
-        "Tránsito Fecha Maxima Finalización": fecha_limite.group(1).strip() if fecha_limite else "N/A",
-        "Acta de Inventario e Inconsistencias PICIZ": acta_n.group(1).strip() if acta_n else "N/A",
+        "FECHA INGRESO ÚLTIMO VEHÍCULO": (
+            fecha_ingreso.group(1).strip() if fecha_ingreso else "N/A"
+        ),
+        "Fecha de autorización": (
+            fecha_auto.group(1).strip() if fecha_auto else "N/A"
+        ),
+        "Tránsito Fecha Maxima Finalización": (
+            fecha_limite.group(1).strip() if fecha_limite else "N/A"
+        ),
+        "Acta de Inventario e Inconsistencias PICIZ": (
+            acta_n.group(1).strip() if acta_n else "N/A"
+        ),
         "Fecha acta de inventario e inconsistencias": fecha_acta,
         "No. Planilla de Recepción (FECHA)": fecha_acta,
         "Peso Báscula ZFC": peso_bascula,
         "OBSERVACIONES/ INCONSISTENCIAS": observaciones,
-        "Archivo": nombre_archivo
+        "Archivo": nombre_archivo,
     }
 
-def generar_excel_actas(df: pd.DataFrame, sheet_name="Actas") -> bytes:
+# --------------------------------------------------------------------------
+# Exportación Profesional a Excel
+# --------------------------------------------------------------------------
+
+HEADER_FILL = PatternFill(start_color="1B4D3E", end_color="1B4D3E", fill_type="solid")
+HEADER_FONT = Font(color="FFFFFF", bold=True)
+THIN_BORDER = Border(
+    left=Side(style="thin", color="D9D9D9"),
+    right=Side(style="thin", color="D9D9D9"),
+    top=Side(style="thin", color="D9D9D9"),
+    bottom=Side(style="thin", color="D9D9D9"),
+)
+
+def generar_excel(df: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-        ws = writer.sheets[sheet_name]
-        n_filas, n_cols = df.shape[0], df.shape[1]
+        df.to_excel(writer, index=False, sheet_name="Actas")
+        ws = writer.sheets["Actas"]
+
+        n_filas = df.shape[0]
+        n_cols = df.shape[1]
 
         for col_idx in range(1, n_cols + 1):
             celda = ws.cell(row=1, column=col_idx)
-            celda.fill, celda.font, celda.border = HEADER_FILL, HEADER_FONT, THIN_BORDER
+            celda.fill = HEADER_FILL
+            celda.font = HEADER_FONT
             celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            celda.border = THIN_BORDER
 
         for row_idx in range(2, n_filas + 2):
             for col_idx in range(1, n_cols + 1):
@@ -517,240 +294,126 @@ def generar_excel_actas(df: pd.DataFrame, sheet_name="Actas") -> bytes:
 
         for col_idx, columna in enumerate(df.columns, start=1):
             longitudes = [len(str(columna))] + [len(str(v)) for v in df[columna].astype(str).tolist()]
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max(longitudes) + 3, 45)
+            ancho = min(max(longitudes) + 3, 45)
+            ws.column_dimensions[get_column_letter(col_idx)].width = ancho
+
+        ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{n_filas}"
         ws.freeze_panes = "A2"
+
     return buffer.getvalue()
 
-def modulo_actas_transito():
-    st.markdown("<p class='executive-title'>Actas de Tránsito / PICIZ</p>", unsafe_allow_html=True)
-    st.markdown("<p class='executive-subtitle'>Extractor automático de Actas de Inventario e Inconsistencias para Tránsito Aduanero.</p>", unsafe_allow_html=True)
+# --------------------------------------------------------------------------
+# Interfaz de Usuario Corporativa (Streamlit)
+# --------------------------------------------------------------------------
 
-    if "df_resultado_actas" not in st.session_state:
-        st.session_state.df_resultado_actas = pd.DataFrame()
-    if "uploader_key_actas" not in st.session_state:
-        st.session_state.uploader_key_actas = 0
+col_logo, col_titulo = st.columns([1.3, 3.7])
 
+with col_logo:
+    logo_encontrado = False
+    for filename in ["LOGO ZFS-ZFC.jpeg", "logo.jpeg", "logo.jpg", "logo.png"]:
+        if os.path.exists(filename):
+            st.image(filename, width=240)
+            logo_encontrado = True
+            break
+    
+    if not logo_encontrado:
+        st.info("💡 Sube tu imagen de logo al repositorio como `LOGO ZFS-ZFC.jpeg`.")
+
+with col_titulo:
+    st.markdown("### Módulo de Gestión de Inventarios e Inconsistencias")
+    st.markdown("**Extractor Automático de Actas PICIZ — Tránsito Aduanero**")
+    st.caption("Zona Franca de Cúcuta | Operada por Zona Franca Santander")
+
+st.divider()
+
+if "df_resultado_actas" not in st.session_state:
+    st.session_state.df_resultado_actas = pd.DataFrame()
+
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+with st.container():
+    st.subheader("1. Carga de Documentación de Actas")
+    
     uploaded_files = st.file_uploader(
-        "Carga los archivos PDF de las actas de inventario",
+        "Carga los archivos PDF de las actas de inventario (individuales o múltiples)",
         type=["pdf"],
         accept_multiple_files=True,
-        key=f"actas_uploader_{st.session_state.uploader_key_actas}"
+        key=f"actas_uploader_{st.session_state.uploader_key}",
     )
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
         procesar = st.button("🚀 Procesar Actas", type="primary", use_container_width=True)
     with col_btn2:
-        limpiar = st.button("🧹 Limpiar Panel Actas", use_container_width=True)
+        limpiar = st.button("🧹 Limpiar y Reiniciar Panel", use_container_width=True)
 
-    if limpiar:
-        st.session_state.df_resultado_actas = pd.DataFrame()
-        st.session_state.uploader_key_actas += 1
-        st.rerun()
+if limpiar:
+    st.session_state.df_resultado_actas = pd.DataFrame()
+    st.session_state.uploader_key += 1
+    st.rerun()
 
-    if procesar:
-        if not uploaded_files:
-            st.warning("Por favor carga al menos un archivo PDF.")
-        else:
-            with st.spinner("Extrayendo datos de las actas..."):
-                datos = [extraer_datos_acta(file, file.name) for file in uploaded_files]
-                st.session_state.df_resultado_actas = pd.DataFrame(datos)
-            st.success(f"✅ Extracción completada para {len(uploaded_files)} acta(s).")
+if procesar:
+    if not uploaded_files:
+        st.warning("Por favor carga al menos un archivo PDF antes de ejecutar el procesamiento.")
+    else:
+        with st.spinner("Extrayendo campos clave de las actas de tránsito..."):
+            datos_extraidos = [extraer_datos_acta(file, file.name) for file in uploaded_files]
+            st.session_state.df_resultado_actas = pd.DataFrame(datos_extraidos)
+        st.success(f"✅ Extracción completada con éxito para {len(uploaded_files)} acta(s).")
 
-    df = st.session_state.df_resultado_actas
-    if not df.empty:
-        st.markdown("---")
-        busqueda = st.text_input("🔍 Búsqueda rápida en actas...", "")
-        df_vista = df.copy()
-        if busqueda:
-            mask = df_vista.apply(lambda fila: fila.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
-            df_vista = df_vista[mask]
+# --------------------------------------------------------------------------
+# Visualización de Resultados y Analítica
+# --------------------------------------------------------------------------
 
-        st.dataframe(df_vista, use_container_width=True, height=400)
+df = st.session_state.df_resultado_actas
 
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                "⬇️ Descargar Reporte Excel (.xlsx)",
-                data=generar_excel_actas(df, sheet_name="Actas"),
-                file_name=f"actas_zona_franca_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+if not df.empty:
+    st.markdown("---")
+    st.subheader("2. Resultados Consolidados")
+
+    busqueda = st.text_input("🔍 Búsqueda rápida (Usuario, Tránsito N°, Acta PICIZ, Documento...)", "")
+
+    df_vista = df.copy()
+    if busqueda:
+        mask = df_vista.apply(lambda fila: fila.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
+        df_vista = df_vista[mask]
+
+    st.dataframe(df_vista, use_container_width=True, height=430)
+
+    # 🔧 NUEVO: Aviso de registros sin N° de Tránsito detectado
+    if "Transito N°" in df.columns:
+        sin_transito = df[df["Transito N°"].astype(str).str.strip().isin(["N/A", "", "nan", "None"])]
+        if not sin_transito.empty:
+            st.warning(
+                f"⚠️ Se detectaron {len(sin_transito)} acta(s) sin N° de Tránsito. "
+                "Revisa manualmente los archivos:"
             )
-        with col2:
-            st.download_button(
-                "⬇️ Descargar Reporte CSV (.csv)",
-                data=df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
-                file_name=f"actas_zona_franca_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
+            st.dataframe(
+                sin_transito[["Archivo", "Transito N°", "Documento de transporte", "FMM N°"]],
+                use_container_width=True,
             )
 
-
-# ==========================================
-# MÓDULO 3: CONTROL BLOQUEO FORMULARIOS
-# ==========================================
-def limpiar_numeros(valor):
-    if pd.isna(valor) or valor == '':
-        return ""
-    try:
-        val_str = str(valor).strip()
-        if val_str == '' or val_str.lower() in ['nan', 'none']:
-            return ""
-        if '.' in val_str:
-            return str(int(float(val_str)))
-        return val_str
-    except ValueError:
-        return str(valor).strip()
-
-def modulo_control_bloqueos():
-    st.markdown("<p class='executive-title'>Módulo de Control de Bloqueos y Vencimientos</p>", unsafe_allow_html=True)
-    st.markdown("<p class='executive-subtitle'>Sistema de auditoría y seguimiento de ingresos para operaciones de comercio exterior.</p>", unsafe_allow_html=True)
-
-    if 'file_processed' not in st.session_state:
-        st.session_state.file_processed = False
-    if 'df_final_bloqueos' not in st.session_state:
-        st.session_state.df_final_bloqueos = None
-    if 'fecha_ref' not in st.session_state:
-        st.session_state.fecha_ref = datetime.date.today()
-
-    with st.sidebar:
-        st.markdown("<hr style='margin: 10px 0; border: 1px solid #D1D5DB;'>", unsafe_allow_html=True)
-        st.markdown("### Configuración Operativa")
-        
-        fecha_actual_input = st.date_input(
-            "Fecha Actual de Referencia",
-            value=st.session_state.fecha_ref
+    st.markdown("---")
+    st.subheader("3. Exportación de Datos")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "⬇️ Descargar Reporte en Excel (.xlsx)",
+            data=generar_excel(df),
+            file_name=f"actas_zona_franca_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
-        st.session_state.fecha_ref = fecha_actual_input
-
-        st.markdown("---")
-        uploaded_file = st.file_uploader("Cargar Reporte PW (Excel)", type=["xlsx", "xls"], key="uploader_bloqueos")
-        
-        st.markdown("---")
-        if st.button("Limpiar Datos y Sesión", use_container_width=True, key="btn_clean_bloqueos"):
-            st.session_state.file_processed = False
-            st.session_state.df_final_bloqueos = None
-            st.rerun()
-
-    if uploaded_file is not None:
-        try:
-            with st.spinner("Procesando registros aduaneros..."):
-                df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
-                
-                header_row_index = -1
-                for i, row in df_raw.iterrows():
-                    row_str = " ".join(str(val) for val in row.values)
-                    if "NOMBRE COMPANIA" in row_str or "PLACA" in row_str:
-                        header_row_index = i
-                        break
-                
-                if header_row_index == -1:
-                    st.error("No se localizó la fila de encabezados estándar en el archivo cargado.")
-                    st.stop()
-                
-                df = pd.read_excel(uploaded_file, header=header_row_index, dtype=str)
-                df.columns = df.columns.str.strip().str.replace(r'\r\n', '', regex=True)
-                
-                columnas_esperadas = {
-                    'NOMBRE COMPANIA': 'Compañía Usuaria',
-                    'PLACA': 'Placa',
-                    'FECHA REGISTRO': 'Fecha Registro',
-                    'TIPO INGRESO': 'Tipo Ingreso', 
-                    'NUM DEL DOC. ADUANERO': 'Número Documento',
-                    'TRANSITO': 'Tránsito',
-                    'FECHA BASCULA': 'Fecha de Báscula'
-                }
-                
-                columnas_existentes = {k: v for k, v in columnas_esperadas.items() if k in df.columns}
-                df_filtrado = df[list(columnas_existentes.keys())].rename(columns=columnas_existentes)
-                
-                if 'Tipo Ingreso' in df_filtrado.columns:
-                    df_filtrado = df_filtrado[df_filtrado['Tipo Ingreso'].str.contains('FORMULARIO', na=False, case=False)]
-                    df_filtrado = df_filtrado.drop(columns=['Tipo Ingreso'])
-                
-                df_filtrado = df_filtrado.dropna(subset=['Placa'])
-                df_filtrado['Placa'] = df_filtrado['Placa'].astype(str).str.strip()
-                df_filtrado = df_filtrado[df_filtrado['Placa'] != '']
-
-                for col in ['Número Documento', 'Tránsito']:
-                    if col in df_filtrado.columns:
-                        df_filtrado[col] = df_filtrado[col].apply(limpiar_numeros)
-
-                for col in ['Fecha Registro', 'Fecha de Báscula']:
-                    if col in df_filtrado.columns:
-                        df_filtrado[col] = pd.to_datetime(df_filtrado[col], dayfirst=True, errors='coerce')
-
-                # Cálculo de días en operación o vencimientos basado en la fecha de referencia
-                if 'Fecha de Báscula' in df_filtrado.columns:
-                    fecha_base = df_filtrado['Fecha de Báscula']
-                else:
-                    fecha_base = df_filtrado['Fecha Registro']
-                
-                df_filtrado['Días en Proceso'] = (pd.to_datetime(st.session_state.fecha_ref) - fecha_base).dt.days
-
-                # Formatear las fechas nuevamente a string para una vista amigable
-                for col in ['Fecha Registro', 'Fecha de Báscula']:
-                    if col in df_filtrado.columns:
-                        df_filtrado[col] = df_filtrado[col].dt.strftime('%Y-%m-%d').fillna('')
-
-                st.session_state.df_final_bloqueos = df_filtrado
-                st.session_state.file_processed = True
-                st.success("✅ Reporte procesado correctamente.")
-        
-        except Exception as e:
-            st.error(f"Error al procesar el archivo: {e}")
-
-    # Mostrar Resultados del Módulo 3
-    if st.session_state.file_processed and st.session_state.df_final_bloqueos is not None:
-        df_show = st.session_state.df_final_bloqueos
-        
-        st.markdown("---")
-        st.subheader("Auditoría de Formularios y Tiempos de Ingreso")
-        
-        col_metric1, col_metric2 = st.columns(2)
-        col_metric1.metric("Total Formularios Procesados", len(df_show))
-        if 'Días en Proceso' in df_show.columns:
-            alertas = len(df_show[df_show['Días en Proceso'] > 5])  # Ejemplo: Más de 5 días
-            col_metric2.metric("Registros con > 5 Días (Posibles Bloqueos)", alertas)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        busqueda = st.text_input("🔍 Buscar por Placa o Documento...", "")
-        df_vista = df_show.copy()
-        if busqueda:
-            mask = df_vista.apply(lambda fila: fila.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
-            df_vista = df_vista[mask]
-
-        st.dataframe(df_vista, use_container_width=True, height=400)
-        
-        st.markdown("---")
-        col_dl1, col_dl2 = st.columns(2)
-        with col_dl1:
-            st.download_button(
-                "⬇️ Descargar Reporte Excel (.xlsx)",
-                data=generar_excel_actas(df_show, sheet_name="Bloqueos"),
-                file_name=f"control_bloqueos_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="dl_excel_bloqueos"
-            )
-        with col_dl2:
-            st.download_button(
-                "⬇️ Descargar Reporte CSV (.csv)",
-                data=df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
-                file_name=f"control_bloqueos_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-                key="dl_csv_bloqueos"
-            )
-
-# ==========================================
-# RUTEO PRINCIPAL (EJECUCIÓN DE MÓDULOS)
-# ==========================================
-if opcion_modulo == "Procesador de DIM":
-    modulo_procesador_dim()
-elif opcion_modulo == "Actas de Tránsito / PICIZ":
-    modulo_actas_transito()
-elif opcion_modulo == "Control Bloqueo Formularios":
-    modulo_control_bloqueos()
+    with col2:
+        csv_data = df.to_csv(index=False, sep=",", encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Descargar Reporte en CSV (.csv)",
+            data=csv_data,
+            file_name=f"actas_zona_franca_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+else:
+    st.info("Carga tus archivos PDF de actas para habilitar el procesamiento, la tabla interactiva y las descargas.")
